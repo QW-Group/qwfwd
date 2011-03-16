@@ -99,10 +99,8 @@ typedef unsigned char byte;
 	#define strnicmp strncasecmp
 #endif
 
-#ifndef _WIN32
-	#ifndef STDIN
-		#define STDIN 0
-	#endif
+#ifndef STDIN
+	#define STDIN 0
 #endif
 
 #ifndef __cplusplus
@@ -218,7 +216,7 @@ typedef struct proxy_static_s
 
 extern proxy_static_t ps;
 
-extern cvar_t *developer, *maxclients, *hostname, *sys_readstdin;
+extern cvar_t *developer, *maxclients, *hostname;
 
 //
 // token.c

@@ -15,7 +15,6 @@ cvar_t *developer;
 cvar_t *version;
 cvar_t *hostname;
 cvar_t *maxclients;
-cvar_t *sys_readstdin;
 
 proxy_static_t ps;
 
@@ -111,7 +110,6 @@ DWORD WINAPI FWD_proc(void *lpParameter)
 	version			= Cvar_Get("*version",		QWFWD_VERSION, CVAR_READONLY | CVAR_SERVERINFO);
 	hostname		= Cvar_Get("hostname",		"unnamed qwfwd", CVAR_SERVERINFO);
 	maxclients		= Cvar_Get("maxclients",	"128", CVAR_SERVERINFO);
-	sys_readstdin	= Cvar_Get("sys_readstdin",	"1", 0);
 
 	// register basic commands
 	Cmd_AddCommand("quit", Cmd_Quit_f);

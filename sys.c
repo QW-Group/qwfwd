@@ -254,14 +254,22 @@ double bound( double a, double b, double c )
 	return ( a >= c ? a : b < a ? a : b > c ? c : b);
 }
 
+#ifdef _WIN32
+#include <io.h> // _isatty
+#define isatty _isatty
+#endif
+
 // handle keyboard input
 void Sys_ReadSTDIN(proxy_static_t *cluster, fd_set socketset)
 {
 // if not DLL - read stdin
 #ifndef APP_DLL
 
-	if (!sys_readstdin->integer)
+	if (!isatty(STDIN))
+	{
+		// stdin does not connected to a terminal.
 		return;
+	}
 
 #ifdef _WIN32
 
