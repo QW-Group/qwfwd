@@ -27,6 +27,13 @@ peer_t	*FWD_peer_new(const char *remote_host, int remote_port, struct sockaddr_i
 	int s = INVALID_SOCKET;
 	qbool new_peer = false;
 
+	if (!NET_GetSockAddrIn_ByHostAndPort(&to, remote_host, remote_port))
+		return NULL; // failed to resolve host name?
+
+	// check for bans.
+	if (SV_IsBanned(&to))
+		return NULL;
+
 	// we probably already have such peer, reuse it then
 	p = FWD_peer_by_addr( from );
 
@@ -38,15 +45,12 @@ peer_t	*FWD_peer_new(const char *remote_host, int remote_port, struct sockaddr_i
 		if (FWD_peers_count() >= maxclients->integer)
 			return NULL; // we already full!
 
+		// NOTE: socket allocated here! Do not forget free it!!!
 		if ((s = NET_UDP_OpenSocket(NULL, 0, false)) == INVALID_SOCKET)
 			return NULL; // out of sockets?
-	}
 
-	if (!NET_GetSockAddrIn_ByHostAndPort(&to, remote_host, remote_port))
-		return NULL; // failed to resolve host name?
-
-	if ( new_peer )
 		p = Sys_malloc(sizeof(*p)); // alloc peer if needed
+	}
 
 	p->s		= ( new_peer ) ? s : p->s; // reuse socket in case of reusing
 	p->from		= *from;
@@ -219,6 +223,10 @@ static void FWD_network_update(void)
 			if (!NET_GetPacket(net_socket, &net_message))
 				break;
 
+			// check for bans.
+			if (SV_IsBanned(&net_from))
+				continue;
+
 			if (net_message.cursize == 1 && net_message.data[0] == A2A_ACK)
 			{
 				QRY_SV_PingReply();
@@ -285,6 +293,10 @@ static void FWD_network_update(void)
 			{
 				if (!NET_GetPacket(p->s, &net_message))
 					break;
+
+				// check for bans.
+				if (SV_IsBanned(&net_from))
+					continue;
 
 				// we should check is this packet from remote server, this may be some evil packet from haxors...
 				if (!NET_CompareAddress(&p->to, &net_from))

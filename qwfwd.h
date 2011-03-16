@@ -439,6 +439,17 @@ void				Huff_DecompressPacket(sizebuf_t *msg, int offset);
 int					Huff_GetByte(byte *buffer, int *count);
 void				Huff_EmitByte(int ch, byte *buffer, int *count);
 
+//
+// ban.c
+//
+
+// Init banning system.
+void				Ban_Init(void);
+// Periodically check is it time to remove some bans.
+void				SV_CleanBansIPList(void);
+// Return true if add is banned.
+qbool				SV_IsBanned (struct sockaddr_in *addr);
+
 #ifdef __cplusplus
 }
 #endif
