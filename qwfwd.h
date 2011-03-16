@@ -103,6 +103,10 @@ typedef unsigned char byte;
 	#define STDIN 0
 #endif
 
+#ifndef STDOUT
+	#define STDOUT 1
+#endif
+
 #ifndef __cplusplus
 typedef enum {false, true} qbool;
 #else

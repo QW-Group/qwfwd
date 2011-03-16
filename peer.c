@@ -191,7 +191,7 @@ static void FWD_network_update(void)
 #ifndef APP_DLL
 	#ifndef _WIN32
 	// try read stdin only if connected to a terminal.
-	if (isatty(STDIN))
+	if (isatty(STDIN) && isatty(STDOUT))
 	{
 		FD_SET(STDIN, &rfds);
 		if (STDIN >= i1)

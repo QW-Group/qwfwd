@@ -265,7 +265,7 @@ void Sys_ReadSTDIN(proxy_static_t *cluster, fd_set socketset)
 // if not DLL - read stdin
 #ifndef APP_DLL
 
-	if (!isatty(STDIN))
+	if (!isatty(STDIN) || !isatty(STDOUT))
 	{
 		// stdin does not connected to a terminal.
 		return;
