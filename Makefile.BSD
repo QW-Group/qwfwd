@@ -1,5 +1,8 @@
 EXTRACFLAGS=-Wall -O2
 .ifmake qwfwd-dl
+EXTRACFLAGS += -fPIC -pthread -D APP_DLL
+.endif
+.ifmake qwfwd-dl32
 EXTRACFLAGS += -m32 -fPIC -pthread -D APP_DLL
 .endif
 
@@ -19,6 +22,10 @@ qwfwd.exe: *.c *.h
 	mv qwfwd qwfwd.exe
 
 qwfwd-dl: ${OBJS} qwfwd.h
+	${CC} ${CFLAGS} ${OBJS} ${LDFLAGS} -shared -Wl,-soname,qwfwd-db.so -o qwfwd-db.so -lm
+	${STRIP} ${STRIPFLAGS} qwfwd-db.so -o qwfwd.so
+
+qwfwd-dl32: ${OBJS} qwfwd.h
 	${CC} ${CFLAGS} ${OBJS} ${LDFLAGS} -shared -Wl,-soname,qwfwd-db.so -o qwfwd-db.so -lm
 	${STRIP} ${STRIPFLAGS} qwfwd-db.so -o qwfwd.so
 

@@ -16,7 +16,7 @@ FreeBSD | OpenBSD | NetBSD | DragonFly | BSD)
 Darwin | MacOSX | Linux | SunOS | GNU | CYGWIN_*)
 	cat Makefile.GNU > Makefile
 	echo "${UNAME} system detected, Makefile created."
-	echo "Use make or make qwfwd-dl to build."
+	echo "Use make or make qwfwd-dl/qwfwd-dl32 to build."
 	;;
 *)
 	echo "ERROR: Unknown system: ${UNAME}."
