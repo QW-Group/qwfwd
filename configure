@@ -6,15 +6,16 @@ UNAME=$1
 else
 UNAME=`uname`
 fi
+echo UNAME="${UNAME}" > Makefile
 
 case ${UNAME} in
 FreeBSD | OpenBSD | NetBSD | DragonFly | BSD)
-	cat Makefile.BSD > Makefile
+	cat Makefile.BSD >> Makefile
 	echo "${UNAME} system detected, Makefile created."
 	echo "Use make or make qwfwd-dl to build."
 	;;
 Darwin | MacOSX | Linux | SunOS | GNU | CYGWIN_*)
-	cat Makefile.GNU > Makefile
+	cat Makefile.GNU >> Makefile
 	echo "${UNAME} system detected, Makefile created."
 	echo "Use make or make qwfwd-dl/qwfwd-dl32 to build."
 	;;

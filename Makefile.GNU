@@ -6,8 +6,12 @@ ifeq ($(MAKECMDGOALS),qwfwd-dl32)
 	EXTRACFLAGS += -m32 -fPIC -pthread -D APP_DLL
 endif
 
+ifneq ($(UNAME),Darwin)
+ifneq ($(UNAME),MacOSX)
 STRIP=strip
 STRIPFLAGS=--strip-unneeded --remove-section=.comment
+endif
+endif
 
 CC=gcc $(EXTRACFLAGS)
 
