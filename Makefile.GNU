@@ -6,10 +6,10 @@ ifeq ($(MAKECMDGOALS),qwfwd-dl32)
 	EXTRACFLAGS += -m32 -fPIC -pthread -D APP_DLL
 endif
 
-CC=gcc $(EXTRACFLAGS)
 STRIP=strip
-
 STRIPFLAGS=--strip-unneeded --remove-section=.comment
+
+CC=gcc $(EXTRACFLAGS)
 
 OBJS = ban.o clc.o cmd.o info.o main.o msg.o net.o peer.o svc.o sys.o query.o cvar.o fs.o token.o huff.o
 
@@ -22,11 +22,11 @@ qwfwd.exe: *.c *.h
 	mv qwfwd qwfwd.exe
 
 qwfwd-dl: $(OBJS) qwfwd.h
-	$(CC) $(CFLAGS) $(OBJS) $(LDFLAGS) -shared -Wl,-soname,qwfwd-db.so -o qwfwd-db.so -lm
+	$(CC) $(CFLAGS) $(OBJS) $(LDFLAGS) -shared -Wl -o qwfwd-db.so -lm
 	$(STRIP) $(STRIPFLAGS) qwfwd-db.so -o qwfwd.so
 
 qwfwd-dl32: $(OBJS) qwfwd.h
-	$(CC) $(CFLAGS) $(OBJS) $(LDFLAGS) -shared -Wl,-soname,qwfwd-db.so -o qwfwd-db.so -lm
+	$(CC) $(CFLAGS) $(OBJS) $(LDFLAGS) -shared -Wl -o qwfwd-db.so -lm
 	$(STRIP) $(STRIPFLAGS) qwfwd-db.so -o qwfwd.so
 
 clean:
