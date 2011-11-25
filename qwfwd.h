@@ -419,6 +419,11 @@ void				Info_SetValueForStarKey (char *s, const char *key, const char *value, in
 void				Info_SetValueForKey (char *s, const char *key, const char *value, unsigned int maxsize);
 void				Info_Print (char *s);
 
+// Do NOT use it unless you sure!!!
+void				Info_SetValueForStarKeyEx (char *s, const char *key, const char *value, int maxsize, qbool max_info_key_check);
+// Do NOT use it unless you sure!!!
+void				Info_SetValueForKeyEx (char *s, const char *key, const char *value, unsigned int maxsize, qbool max_info_key_check);
+
 //
 // query.c
 //

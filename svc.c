@@ -185,7 +185,7 @@ static void SVC_DirectConnect (void)
 {
 	unsigned int i = FindChallengeForAddr(&net_from);
 
-	char userinfo[MAX_INFO_STRING], prx[MAX_INFO_KEY], *at;
+	char userinfo[MAX_INFO_STRING], prx[MAX_INFO_KEY * 4 /* we allow huge size for prx */], *at;
 	peer_t *p = NULL;
 	int qport, port, challenge;
 	protocol_t proto;
@@ -261,7 +261,7 @@ static void SVC_DirectConnect (void)
 	// check chaining
 	if ((at = strchr(prx, '@')) && at[1])
 	{
-		Info_SetValueForStarKey(userinfo, QWFWD_PRX_KEY, at+1, sizeof(userinfo));
+		Info_SetValueForKeyEx(userinfo, QWFWD_PRX_KEY, at+1, sizeof(userinfo), false);
 		at[0] = 0; // truncate proxy chains
 	}
 	else

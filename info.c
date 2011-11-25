@@ -120,7 +120,7 @@ void Info_RemoveKey (char *s, const char *key)
 
 }
 
-void Info_SetValueForStarKey (char *s, const char *key, const char *value, int maxsize)
+void Info_SetValueForStarKeyEx (char *s, const char *key, const char *value, int maxsize, qbool max_info_key_check)
 {
 	char	newv[1024], *v;
 	int		c;
@@ -137,10 +137,13 @@ void Info_SetValueForStarKey (char *s, const char *key, const char *value, int m
 		return;
 	}
 
-	if (strlen(key) >= MAX_INFO_KEY || strlen(value) >= MAX_INFO_KEY)
+	if (max_info_key_check)
 	{
-//		printf ("Key or value is too long\n");
-		return;
+		if (strlen(key) >= MAX_INFO_KEY || strlen(value) >= MAX_INFO_KEY)
+		{
+	//		printf ("Key or value is too long\n");
+			return;
+		}
 	}
 
 	// this next line is kinda trippy
@@ -182,7 +185,12 @@ void Info_SetValueForStarKey (char *s, const char *key, const char *value, int m
 	*s = 0;
 }
 
-void Info_SetValueForKey (char *s, const char *key, const char *value, unsigned int maxsize)
+void Info_SetValueForStarKey (char *s, const char *key, const char *value, int maxsize)
+{
+	Info_SetValueForStarKeyEx(s, key, value, maxsize, true);
+}
+
+void Info_SetValueForKeyEx (char *s, const char *key, const char *value, unsigned int maxsize, qbool max_info_key_check)
 {
 	if (key[0] == '*')
 	{
@@ -190,9 +198,13 @@ void Info_SetValueForKey (char *s, const char *key, const char *value, unsigned 
 		return;
 	}
 
-	Info_SetValueForStarKey (s, key, value, maxsize);
+	Info_SetValueForStarKeyEx (s, key, value, maxsize, max_info_key_check);
 }
 
+void Info_SetValueForKey (char *s, const char *key, const char *value, unsigned int maxsize)
+{
+	Info_SetValueForKeyEx (s, key, value, maxsize, true);
+}
 
 void Info_Print (char *s)
 {
