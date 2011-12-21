@@ -176,6 +176,15 @@ qbool NET_CompareAddress(struct sockaddr_in *a, struct sockaddr_in *b)
 		    );
 }
 
+// return true if adresses equal (does not compare ports)
+qbool NET_CompareBaseAddress(struct sockaddr_in *a, struct sockaddr_in *b)
+{
+	if (!a || !b)
+		return false;
+
+	return !memcmp(&a->sin_addr, &b->sin_addr, sizeof(a->sin_addr));
+}
+
 char *NET_BaseAdrToString (struct sockaddr_in *a, char *buf, size_t bufsize)
 {
 	unsigned char ip[4];

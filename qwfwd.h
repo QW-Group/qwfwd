@@ -114,8 +114,9 @@ typedef int qbool;
 extern "C" {
 #endif
 
-#define QWFWD_VERSION "qwfwd 1.1-dev"			// version, used in serverinfo.
-#define QWFWD_VERSION_SHORT "1.1-dev"			// version, used in userinfo.
+#define QWFWD_VERSION "qwfwd 1.2-dev"			// version, used in serverinfo.
+#define QWFWD_VERSION_SHORT "1.2-dev"			// version, used in userinfo.
+#define QWFWD_URL "http://qw-dev.net/projects/qwfwd"
 
 #define QWFWD_DEFAULT_PORT 30000
 
@@ -389,7 +390,10 @@ qbool				NET_GetSockAddrIn_ByHostAndPort(struct sockaddr_in *address, const char
 char				*NET_BaseAdrToString (struct sockaddr_in *a, char *buf, size_t bufsize);
 char				*NET_AdrToString (struct sockaddr_in *a, char *buf, size_t bufsize);
 
+// return true if adresses equal
 qbool				NET_CompareAddress(struct sockaddr_in *a, struct sockaddr_in *b);
+// return true if adresses equal (does not compare ports)
+qbool				NET_CompareBaseAddress(struct sockaddr_in *a, struct sockaddr_in *b);
 
 void				Netchan_OutOfBand(int s, struct sockaddr_in *adr, int length, byte *data);
 void				Netchan_OutOfBandPrint(int s, struct sockaddr_in *adr, const char *format, ...);

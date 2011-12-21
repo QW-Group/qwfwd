@@ -100,6 +100,12 @@ DWORD WINAPI FWD_proc(void *lpParameter)
 	memset(&ps, 0, sizeof(ps));
 	ps.params = *(fwd_params_t*)lpParameter;
 
+	Sys_Printf("\n");
+	Sys_Printf("qwfwd v" QWFWD_VERSION_SHORT " by Ivan 'qqshka' Bolsunov.\n");
+	Sys_Printf("For non-commercial use only. No warranty. Use at your own risk.\n");
+	Sys_Printf(QWFWD_URL "\n");
+	Sys_Printf("\n");
+
 	// init basic systems
 	Cbuf_Init();			// Command buffer init.
 	Cmd_Init();				// Register basic commands.

@@ -16,16 +16,20 @@
 #define QW_MASTERS_FORCE_RE_INIT (60 * 60 * 24) // seconds, force re-init masters time to time, so we add proper masters if there was some ip/dns changes
 #define QW_MASTER_HEARTBEAT_SECONDS (60 * 5) // seconds, frequency of heartbeat
 
-#define QW_DEFAULT_MASTER_SERVERS "master.quakeservers.net asgaard.morphos-team.net master.quakeworld.nu"
+#define QW_DEFAULT_MASTER_SERVERS "qwmaster.ocrana.de masterserver.exhale.de master.quakeworld.nu asgaard.morphos-team.net"
 #define QW_DEFAULT_MASTER_SERVER_PORT 27000
 
 #define MAX_MASTERS 8 // size for masters fixed size array, I am lazy
 
 #define MAX_SERVERS 512 // we will not add more than that servers to our list, just for some sanity
 
+#define MAX_SV_FILTERS 16 // how much servers we can filter with masters_filter_servers, can be increased widely.
+#define QW_DEFAULT_SV_FILTER "127.0.0.1" // some masters provide unusable servers, filter them.
+
 static cvar_t *masters_query;
 static cvar_t *masters_heartbeat;
 static cvar_t *masters_list;
+static cvar_t *masters_filter_servers;
 
 // master state enum
 typedef enum
@@ -68,8 +72,17 @@ typedef struct server
 	struct server			*next;			// next server in linked list
 } server_t;
 
+// single server_filter struct.
+// used by masters_filter_servers.
+typedef struct server_filter
+{
+	struct sockaddr_in		addr[MAX_SV_FILTERS];			// addr[]
+	int						count;
+} server_filter_t;
+
 static int sv_count;
 static server_t *servers;
+static server_filter_t server_filter;
 static masters_t masters;
 
 static master_t	*QRY_Master_ByAddr(struct sockaddr_in *addr)
@@ -88,7 +101,6 @@ static master_t	*QRY_Master_ByAddr(struct sockaddr_in *addr)
 
 	return NULL;
 }
-
 
 static qbool QRY_AddMaster(const char *master)
 {
@@ -255,7 +267,7 @@ qbool QRY_IsMasterReply(void)
 	return true;
 }
 
-static server_t *QRY_SV_Add(const char *remote_host, int remote_port); // forward reference
+static server_t	*QRY_SV_new(const char *remote_host, int remote_port, qbool link); // forward reference
 
 void SVC_QRY_ParseMasterReply(void)
 {
@@ -307,31 +319,79 @@ void SVC_QRY_ParseMasterReply(void)
 		if (developer->integer > 1)
 			Sys_DPrintf("SERVER: %4d %s:%d\n", c, ip, port);
 
-		QRY_SV_Add(ip, port);
+		QRY_SV_new(ip, port, true);
 	}
 }
 
 //========================================
+
+static struct sockaddr_in *QRY_FL_Filtered(struct sockaddr_in *addr); // forward reference
 
 static int QRY_SV_Count(void)
 {
 	return sv_count;
 }
 
-static server_t	*QRY_SV_new(struct sockaddr_in *addr, qbool link)
+// return server by pseudo index
+static server_t	*QRY_SV_ByIndex(int idx)
 {
-	server_t *sv;
+	server_t	*sv;
 
-	if (!addr)
-		return NULL; // not funny
+	if (idx < 0)
+		return NULL;
+
+	for (sv = servers; sv; sv = sv->next, idx--)
+		if (!idx)
+			return sv;
+
+	return NULL;
+}
+
+static server_t	*QRY_SV_ByAddrEx(struct sockaddr_in *addr, qbool base)
+{
+	// use different compare function.
+	typedef		qbool (*net_cmp_func)(struct sockaddr_in *a, struct sockaddr_in *b);
+	net_cmp_func cmp_func = base ? NET_CompareBaseAddress : NET_CompareAddress;
+
+	server_t	*sv;
+
+	for (sv = servers; sv; sv = sv->next)
+		if ((*cmp_func)(addr, &sv->addr))
+			return sv;
+
+	return NULL;
+}
+
+static server_t	*QRY_SV_ByAddr(struct sockaddr_in *addr)
+{
+	return QRY_SV_ByAddrEx(addr, false);
+}
+
+static server_t	*QRY_SV_new(const char *remote_host, int remote_port, qbool link)
+{
+	server_t			*sv;
+	struct sockaddr_in	addr;
 
 	if (QRY_SV_Count() >= MAX_SERVERS)
 		return NULL;
 
+	if (!NET_GetSockAddrIn_ByHostAndPort(&addr, remote_host, remote_port))
+		return NULL; // failed to resolve host name?
+
+	if ((sv = QRY_SV_ByAddr(&addr)))
+		return NULL; // we already have such server on list
+
+	if (QRY_FL_Filtered(&addr))
+	{
+		char buf[] = "xxx.xxx.xxx.xxx:xxxxx";
+		Sys_DPrintf("filtered: %s\n", NET_AdrToString(&addr, buf, sizeof(buf)));
+		return NULL; // filtered
+	}
+
 	sv_count++;
 
 	sv = Sys_malloc(sizeof(*sv));
-	sv->addr = *addr;
+	sv->addr = addr;
 	sv->ping = 0xFFFF; // mark as unreachable
 
 	if (link)
@@ -379,52 +439,6 @@ static void QRY_SV_free(server_t *sv, qbool unlink)
 	Sys_free(sv);
 
 	sv_count--;
-}
-
-// return server by pseudo index
-static server_t	*QRY_SV_ByIndex(int idx)
-{
-	server_t	*sv;
-
-	if (idx < 0)
-		return NULL;
-
-	for (sv = servers; sv; sv = sv->next, idx--)
-		if (!idx)
-			return sv;
-
-	return NULL;
-}
-
-static server_t	*QRY_SV_ByAddr(struct sockaddr_in *addr)
-{
-	server_t	*sv;
-
-	for (sv = servers; sv; sv = sv->next)
-		if (NET_CompareAddress(addr, &sv->addr))
-			return sv;
-
-	return NULL;
-}
-
-static server_t	*QRY_SV_Add(const char *remote_host, int remote_port)
-{
-	server_t	*sv;
-	struct sockaddr_in addr;
-
-	if (!NET_GetSockAddrIn_ByHostAndPort(&addr, remote_host, remote_port))
-		return NULL; // failed to resolve host name?
-
-	if ((sv = QRY_SV_ByAddr(&addr)))
-	{
-//		Sys_Printf("QRY_SV_Add: already have %s:%d\n", remote_host, remote_port);
-		return sv; // we already have such server on list
-	}
-
-	if (!(sv = QRY_SV_new(&addr, true)))
-		return NULL; // fail of some kind
-
-	return sv;
 }
 
 static void QRY_SV_PingServers(void)
@@ -537,6 +551,112 @@ void SVC_QRY_PingStatus(void)
 	// send the datagram
 	NET_SendPacket(net_from_socket, buf.cursize, buf.data, &net_from);
 }
+
+//==============================================
+// server filters.
+// _FL_ stands for filter.
+
+static void QRY_FL_Init(void)
+{
+	memset(&server_filter, 0, sizeof(server_filter));
+}
+
+static struct sockaddr_in *QRY_FL_Filtered(struct sockaddr_in *addr)
+{
+	int						i;
+
+	for (i = 0; i < server_filter.count; i++)
+	{
+		if (NET_CompareBaseAddress(addr, &server_filter.addr[i]))
+			return &server_filter.addr[i];
+	}
+
+	return NULL;
+}
+
+static qbool QRY_FL_AddFilter(const char *filter)
+{
+	struct sockaddr_in		addr;
+	char					host[1024], *column;
+
+	if (server_filter.count >= MAX_SV_FILTERS)
+	{
+		Sys_Printf("failed to add server filter: %s - filter list are full!\n", filter);
+		return false;
+	}
+
+	// get host name.
+	strlcpy(host, filter, sizeof(host));
+	if ((column = strchr(host, ':')))
+	{
+		column[0] = 0; // get rid of port.
+	}
+
+	if (!host[0])
+	{
+		Sys_Printf("failed to add server filter: %s\n", filter);
+		return false; // empty host name, not funny
+	}
+
+	if (!NET_GetSockAddrIn_ByHostAndPort(&addr, host, 0))
+	{
+		Sys_Printf("failed to add server filter: %s\n", filter);
+		return false;
+	}
+
+	if (QRY_FL_Filtered(&addr))
+	{
+		Sys_Printf("failed to add server filter: %s - already added!\n", filter);
+		return false;
+	}
+
+	server_filter.addr[server_filter.count] = addr;
+	server_filter.count++;
+
+	Sys_Printf("server filter added: %s\n", filter);
+	return true;
+}
+
+static void QRY_FL_RemoveFilteredServers(void)
+{
+	int			i;
+	server_t	*sv;
+
+	for (i = 0; i < server_filter.count; i++)
+	{
+		if ((sv = QRY_SV_ByAddrEx(&server_filter.addr[i], true)))
+		{
+			char buf[] = "xxx.xxx.xxx.xxx:xxxxx";
+			Sys_DPrintf("filtered: %s\n", NET_AdrToString(&sv->addr, buf, sizeof(buf)));
+			QRY_SV_free(sv, true);
+		}
+	}
+}
+
+// check if "masters_filter_servers" cvar changed and do appropriate action
+static void QRY_FL_CheckVarsModified(void)
+{
+	char *mlist;
+
+	// "masters_filter_servers" was not modified, do nothing
+	if (!masters_filter_servers->modified)
+		return;
+
+	// clear filters
+	QRY_FL_Init();
+
+	// add all filters
+	for ( mlist = masters_filter_servers->string; (mlist = COM_Parse(mlist)); )
+	{
+		QRY_FL_AddFilter(com_token);
+	}
+
+	// remove filtered servers if any.
+	QRY_FL_RemoveFilteredServers();
+
+	masters_filter_servers->modified = false;
+}
+
 //==============================================
 
 static void QRY_Cmd_SvList_f(void)
@@ -563,6 +683,7 @@ static void QRY_Cmd_SvList_f(void)
 
 void QRY_Frame(void)
 {
+	QRY_FL_CheckVarsModified();		// check if "masters_filter_servers" variable changed
 	QRY_CheckMastersModified();		// check is "masters" variable changed
 	QRY_QueryMasters();				// request time to time server list from masters
 	QRY_HeartbeatMasters();			// send heartbeat to masters time to time
@@ -576,10 +697,13 @@ void QRY_Init(void)
 	masters_query		= Cvar_Get("masters_query",		"1", 0);
 	masters_heartbeat	= Cvar_Get("masters_heartbeat",	"1", 0);
 	masters_list		= Cvar_Get("masters",			QW_DEFAULT_MASTER_SERVERS, 0);
+	masters_filter_servers = Cvar_Get("masters_filter_servers",	QW_DEFAULT_SV_FILTER, 0);
 
 	Cmd_AddCommand("svlist", QRY_Cmd_SvList_f);
 	Cmd_AddCommand("heartbeat", QRY_Cmd_Heartbeat_f);
 
+	// clear filters
+	QRY_FL_Init();
 	// clear masters
 	QRY_MastersInit();
 }
