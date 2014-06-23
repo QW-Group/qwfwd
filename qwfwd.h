@@ -114,9 +114,9 @@ typedef int qbool;
 extern "C" {
 #endif
 
-#define QWFWD_VERSION "qwfwd 1.2-dev"			// version, used in serverinfo.
-#define QWFWD_VERSION_SHORT "1.2-dev"			// version, used in userinfo.
-#define QWFWD_URL "http://qw-dev.net/projects/qwfwd"
+#define QWFWD_VERSION "qwfwd 1.2-beta"			// version, used in serverinfo.
+#define QWFWD_VERSION_SHORT "1.2-beta"			// version, used in userinfo.
+#define QWFWD_URL "https://github.com/deurk/qwfwd"
 
 #define QWFWD_DEFAULT_PORT 30000
 
