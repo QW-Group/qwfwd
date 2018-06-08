@@ -114,8 +114,8 @@ typedef int qbool;
 extern "C" {
 #endif
 
-#define QWFWD_VERSION "qwfwd 1.2-beta"			// version, used in serverinfo.
-#define QWFWD_VERSION_SHORT "1.2-beta"			// version, used in userinfo.
+#define QWFWD_VERSION "qwfwd 1.2"			// version, used in serverinfo.
+#define QWFWD_VERSION_SHORT "1.2"			// version, used in userinfo.
 #define QWFWD_URL "https://github.com/deurk/qwfwd"
 
 #define QWFWD_DEFAULT_PORT 30000
@@ -137,7 +137,7 @@ typedef enum
 {
 	ps_drop,		// we should drop this peer soon
 	ps_challenge,	// peer getting a challenge
-	ps_connected	// perr fully connected
+	ps_connected	// peer fully connected
 } peer_state_t;
 
 
