@@ -87,8 +87,8 @@ after_success:
   # update snapshots links
   - if [ -z "${TRAVIS_TAG}" ]; then mkdir -p upload/snapshots/${OS}/${ARCH} ;fi
   - if [ -z "${TRAVIS_TAG}" ]; then mkdir -p upload/snapshots/latest/${OS}/${ARCH} ;fi
-  - if [ -z "${TRAVIS_TAG}" ]; then cp ${BINARY} upload/snapshots/${OS}/${ARCH}/${DATETIME}_${TRAVIS_COMMIT:0:7}/${BINARY} ;fi
-  - if [ -z "${TRAVIS_TAG}" ]; then cp build/${CHECKSUM} upload/snapshots/${OS}/${ARCH}/${DATETIME}_${TRAVIS_COMMIT:0:7}/${CHECKSUM} ;fi
+  - if [ -z "${TRAVIS_TAG}" ]; then cp ${BINARY} upload/snapshots/${OS}/${ARCH}/${DATETIME}_${TRAVIS_COMMIT:0:7}_${BINARY} ;fi
+  - if [ -z "${TRAVIS_TAG}" ]; then cp build/${CHECKSUM} upload/snapshots/${OS}/${ARCH}/${DATETIME}_${TRAVIS_COMMIT:0:7}_${CHECKSUM} ;fi
   - if [ -z "${TRAVIS_TAG}" ]; then cp build/${BINARY} upload/snapshots/latest/${OS}/${ARCH}/${BINARY} ;fi
   - if [ -z "${TRAVIS_TAG}" ]; then cp build/${CHECKSUM} upload/snapshots/latest/${OS}/${ARCH}/${CHECKSUM} ;fi
   # update releases links
