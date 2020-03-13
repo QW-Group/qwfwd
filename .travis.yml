@@ -19,23 +19,19 @@ jobs:
     - os: linux
       env:
         TARGET=linux-amd64
-        EXTENSION=.bin
-        DEST_EXTENSION=
+        EXTENSION=
     - os: linux
       env:
         TARGET=linux-i686
-        EXTENSION=.bin
-        DEST_EXTENSION=
+        EXTENSION=
     - os: linux
       env:
         TARGET=linux-armhf
-        EXTENSION=.bin
-        DEST_EXTENSION=
+        EXTENSION=
     - os: linux
       env:
         TARGET=windows-x64
         EXTENSION=.exe
-        DEST_EXTENSION=.exe
       addons:
         apt:
           packages:
@@ -44,7 +40,6 @@ jobs:
       env:
         TARGET=windows-x86
         EXTENSION=.exe
-        DEST_EXTENSION=.exe
       addons:
         apt:
           packages:
@@ -79,21 +74,21 @@ script:
   - ninja -v -C build_${TARGET}
   # print basic info about compiled files
   - file build_${TARGET}/qwfwd${EXTENSION}
+
+after_success:
   # create hash for download verification
   - md5sum build_${TARGET}/qwfwd${EXTENSION} > build_${TARGET}/qwfwd.md5
   # create built items directories
   - mkdir -p built_assets/{commits,latest}/${TARGET}
   - if [ -n "${TRAVIS_TAG}" ]; then mkdir -p built_assets/stable/${TRAVIS_TAG} ;fi
-  - mv build_${TARGET}/qwfwd${EXTENSION} built_assets/commits/${TARGET}/${DATETIME}_${TRAVIS_COMMIT:0:7}_qwfwd${DEST_EXTENSION}
+  - mv build_${TARGET}/qwfwd${EXTENSION} built_assets/commits/${TARGET}/${DATETIME}_${TRAVIS_COMMIT:0:7}_qwfwd${EXTENSION}
   - mv build_${TARGET}/qwfwd.md5 built_assets/commits/${TARGET}/${DATETIME}_${TRAVIS_COMMIT:0:7}_qwfwd.md5
   # update stable links if necessary
-  - if [ -n "${TRAVIS_TAG}" ]; then cp built_assets/commits/${TARGET}/${DATETIME}_${TRAVIS_COMMIT:0:7}_qwfwd${DEST_EXTENSION} built_assets/stable/${TRAVIS_TAG}/${TARGET}/qwfwd${DEST_EXTENSION} ;fi
+  - if [ -n "${TRAVIS_TAG}" ]; then cp built_assets/commits/${TARGET}/${DATETIME}_${TRAVIS_COMMIT:0:7}_qwfwd${EXTENSION} built_assets/stable/${TRAVIS_TAG}/${TARGET}/qwfwd${EXTENSION} ;fi
   - if [ -n "${TRAVIS_TAG}" ]; then cp built_assets/commits/${TARGET}/${DATETIME}_${TRAVIS_COMMIT:0:7}_qwfwd.md5 built_assets/stable/${TRAVIS_TAG}/${TARGET}/qwfwd.md5 ;fi
   # update latest links
-  - cp built_assets/commits/${TARGET}/${DATETIME}_${TRAVIS_COMMIT:0:7}_qwfwd${DEST_EXTENSION} built_assets/latest/${TARGET}/qwfwd${DEST_EXTENSION}
+  - cp built_assets/commits/${TARGET}/${DATETIME}_${TRAVIS_COMMIT:0:7}_qwfwd${EXTENSION} built_assets/latest/${TARGET}/qwfwd${EXTENSION}
   - cp built_assets/commits/${TARGET}/${DATETIME}_${TRAVIS_COMMIT:0:7}_qwfwd.md5 built_assets/latest/${TARGET}/qwfwd.md5
-
-after_success:
   # add SFTP authentication key to the build environment
   - openssl aes-256-cbc -K $encrypted_1e5406d6c11a_key -iv $encrypted_1e5406d6c11a_iv -in qwfwd_builds.key.enc -out qwfwd_builds.key -d
   # set correct permissions on private key
