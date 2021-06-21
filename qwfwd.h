@@ -319,14 +319,19 @@ int			qvsnprintf(char *buffer, size_t count, const char *format, va_list argptr)
 #define		snprintf		qsnprintf
 #define		vsnprintf		qvsnprintf
 
-#endif
+#endif // _WIN32
 
 #if defined(__linux__) || defined(_WIN32) || defined(__CYGWIN__)
 
+#ifndef USE_LIBC_STRLCPY
 size_t			strlcpy (char *dst, const char *src, size_t siz);
-size_t			strlcat (char *dst, char *src, size_t siz);
-
 #endif
+
+#ifndef USE_LIBC_STRLCAT
+size_t			strlcat (char *dst, char *src, size_t siz);
+#endif
+
+#endif // defined(__linux__) || defined(_WIN32) || defined(__CYGWIN__)
 
 void			Sys_Printf (char *fmt, ...);
 void			Sys_DPrintf(char *fmt, ...);

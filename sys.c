@@ -49,6 +49,7 @@ int qvsnprintf(char *buffer, size_t count, const char *format, va_list argptr)
  *
  *  // VVD
  */
+#ifndef USE_LIBC_STRLCPY
 size_t strlcpy(char *dst, const char *src, size_t siz)
 {
 	register char *d = dst;
@@ -77,7 +78,9 @@ size_t strlcpy(char *dst, const char *src, size_t siz)
 
 	return(s - src - 1);	/* count does not include NUL */
 }
+#endif // USE_LIBC_STRLCPY
 
+#ifndef USE_LIBC_STRLCAT
 size_t strlcat(char *dst, char *src, size_t siz)
 {
 	register char *d = dst;
@@ -106,6 +109,7 @@ size_t strlcat(char *dst, char *src, size_t siz)
 
 	return(dlen + (s - src));       /* count does not include NUL */
 }
+#endif // USE_LIBC_STRLCAT
 
 #endif // defined(__linux__) || defined(_WIN32) || defined(__CYGWIN__)
 
