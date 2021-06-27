@@ -1,6 +1,7 @@
 #!/bin/sh
 
 # compile some test code
+# based on https://github.com/tvheadend/tvheadend/
 #
 check_func () {
   	local OUTP=tst-$1
