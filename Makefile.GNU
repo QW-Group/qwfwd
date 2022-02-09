@@ -8,9 +8,9 @@ endif
 
 CC=gcc $(EXTRACFLAGS)
 
-OBJS = ban.o clc.o cmd.o info.o main.o msg.o net.o peer.o svc.o sys.o query.o cvar.o fs.o token.o huff.o
+OBJS = src/ban.o src/clc.o src/cmd.o src/info.o src/main.o src/msg.o src/net.o src/peer.o src/svc.o src/sys.o src/query.o src/cvar.o src/fs.o src/token.o src/huff.o
 
-qwfwd: $(OBJS) qwfwd.h
+qwfwd: $(OBJS) src/qwfwd.h
 	$(CC) $(CFLAGS) $(OBJS) $(LDFLAGS) -o $@.bin -lm
 
 qwfwd.exe: *.c *.h
