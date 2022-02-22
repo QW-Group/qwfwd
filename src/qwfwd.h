@@ -257,7 +257,7 @@ qbool			FS_SafePath(const char *in);
 // peer.c
 //
 
-peer_t		*peers;
+extern	peer_t		*peers;
 
 peer_t		*FWD_peer_by_addr(struct sockaddr_in *from);
 peer_t		*FWD_peer_new(const char *remote_host, int remote_port, struct sockaddr_in *from, const char *userinfo, int qport, protocol_t proto, qbool link);
@@ -375,16 +375,16 @@ double			Sys_DoubleTime (void);
 // net.c
 //
 
-cvar_t				*net_ip, *net_port;
+extern	cvar_t			*net_ip, *net_port;
 
-int					net_socket;
-struct sockaddr_in	net_from;
-int					net_from_socket;
-sizebuf_t			net_message;
+extern	int			net_socket;
+extern	struct sockaddr_in	net_from;
+extern	int			net_from_socket;
+extern	sizebuf_t		net_message;
 
-int					NET_GetPacket(int s, sizebuf_t *msg);
+int				NET_GetPacket(int s, sizebuf_t *msg);
 void				NET_SendPacket(int s, int length, const void *data, struct sockaddr_in *to);
-int					NET_UDP_OpenSocket(const char *ip, int port, qbool do_bind);
+int				NET_UDP_OpenSocket(const char *ip, int port, qbool do_bind);
 qbool				NET_GetSockAddrIn_ByHostAndPort(struct sockaddr_in *address, const char *host, int port);
 
 char				*NET_BaseAdrToString (struct sockaddr_in *a, char *buf, size_t bufsize);
