@@ -20,6 +20,17 @@ peer_t	*FWD_peer_by_addr(struct sockaddr_in *from)
 	return NULL;
 }
 
+static int parse_color(const char *userinfo, const char *key)
+{
+	char tmp[MAX_INFO_STRING];
+	int color;
+
+	Info_ValueForKey(userinfo, key, tmp, sizeof(tmp));
+	color = atoi(tmp);
+
+	return (color < 0) ? 0 : ((color > 16) ? 16 : color);
+}
+
 peer_t	*FWD_peer_new(const char *remote_host, int remote_port, struct sockaddr_in *from, const char *userinfo, int qport, protocol_t proto, qbool link)
 {
 	peer_t *p;
@@ -60,6 +71,8 @@ peer_t	*FWD_peer_new(const char *remote_host, int remote_port, struct sockaddr_i
 	p->proto	= proto;
 	strlcpy(p->userinfo, userinfo, sizeof(p->userinfo));
 	Info_ValueForKey(userinfo, "name", p->name, sizeof(p->name));
+	p->top          = parse_color(userinfo, "topcolor");
+	p->bottom       = parse_color(userinfo, "bottomcolor");
 	p->userid	= ( new_peer ) ? ++userid : p->userid; // do not bump userid in case of peer reusing
 
 	time(&p->last);

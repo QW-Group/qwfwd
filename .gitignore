@@ -17,3 +17,4 @@ src/Makefile.dl32
 src/Makefile.vm
 qwfwd.bin
 qwfwd.db
+build/

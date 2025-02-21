@@ -367,10 +367,8 @@ static void SVC_Status (void)
 	{
 		for (cl = peers; cl; cl = cl->next)
 		{
-			top    = 0;//Q_atoi(Info_Get (&cl->_userinfo_ctx_, "topcolor"));
-			bottom = 0;//Q_atoi(Info_Get (&cl->_userinfo_ctx_, "bottomcolor"));
-			top    = (top    < 0) ? 0 : ((top    > 13) ? 13 : top);
-			bottom = (bottom < 0) ? 0 : ((bottom > 13) ? 13 : bottom);
+			top    = cl->top;
+			bottom = cl->bottom;
 			ping   = 666; //SV_CalcPing (cl);
 			name   = cl->name;
 			skin   = "";

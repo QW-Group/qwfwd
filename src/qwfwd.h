@@ -149,6 +149,8 @@ typedef struct peer
 	int challenge;					// challenge num
 	char userinfo[MAX_INFO_STRING]; // userinfo
 	char name[MAX_INFO_KEY];		// name, extracted from userinfo
+	int top;
+	int bottom;
 	int userid;						// unique per proxy userid
 	int qport;						// qport
 	struct sockaddr_in from;		// client addr
