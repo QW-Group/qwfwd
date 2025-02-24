@@ -15,6 +15,10 @@ cvar_t *developer;
 cvar_t *version;
 cvar_t *hostname;
 cvar_t *maxclients;
+cvar_t *hostport;
+cvar_t *countrycode;
+cvar_t *city;
+cvar_t *coords;
 
 proxy_static_t ps;
 
@@ -116,6 +120,10 @@ DWORD WINAPI FWD_proc(void *lpParameter)
 	version			= Cvar_Get("*version",		QWFWD_VERSION, CVAR_READONLY | CVAR_SERVERINFO);
 	hostname		= Cvar_Get("hostname",		"unnamed qwfwd", CVAR_SERVERINFO);
 	maxclients		= Cvar_Get("maxclients",	"128", CVAR_SERVERINFO);
+	hostport		= Cvar_Get("hostport",		"", CVAR_SERVERINFO);
+	countrycode		= Cvar_Get("countrycode",	"", CVAR_SERVERINFO);
+	city			= Cvar_Get("city",		"", CVAR_SERVERINFO);
+	coords			= Cvar_Get("coords",		"", CVAR_SERVERINFO);
 
 	// register basic commands
 	Cmd_AddCommand("quit", Cmd_Quit_f);

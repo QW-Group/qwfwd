@@ -224,6 +224,7 @@ typedef struct proxy_static_s
 extern proxy_static_t ps;
 
 extern cvar_t *developer, *maxclients, *hostname;
+extern cvar_t *hostport, *countrycode, *city, *coords;
 
 //
 // token.c
