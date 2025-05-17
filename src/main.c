@@ -129,6 +129,8 @@ DWORD WINAPI FWD_proc(void *lpParameter)
 	Cmd_AddCommand("quit", Cmd_Quit_f);
 	Cmd_AddCommand("serverinfo", SV_Serverinfo_f);
 
+	Whitelist_Init();
+
 	// now exec our cfg
 	Cbuf_InsertText ("exec qwfwd.cfg\n");
 	Cbuf_Execute();

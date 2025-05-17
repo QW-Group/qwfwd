@@ -29,6 +29,7 @@ set(SRC_COMMON
     "${DIR_SRC}/svc.c"
     "${DIR_SRC}/sys.c"
     "${DIR_SRC}/token.c"
+    "${DIR_SRC}/whitelist.c"
 	)
 
 
