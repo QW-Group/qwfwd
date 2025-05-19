@@ -464,6 +464,10 @@ void				SV_CleanBansIPList(void);
 // Return true if add is banned.
 qbool				SV_IsBanned (struct sockaddr_in *addr);
 
+// Whitelist system.
+void Whitelist_Init(void);
+qbool SV_IsWhitelisted(struct sockaddr_in *addr);
+
 #ifdef __cplusplus
 }
 #endif

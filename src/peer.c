@@ -41,6 +41,9 @@ peer_t	*FWD_peer_new(const char *remote_host, int remote_port, struct sockaddr_i
 	if (!NET_GetSockAddrIn_ByHostAndPort(&to, remote_host, remote_port))
 		return NULL; // failed to resolve host name?
 
+	if (!SV_IsWhitelisted(&to))
+		return NULL;
+
 	// check for bans.
 	if (SV_IsBanned(&to))
 		return NULL;
