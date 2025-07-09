@@ -12,53 +12,64 @@ jobs:
          - target: linux-amd64
            os: linux
            arch: amd64
+           build-image: debian:stable
            ext: ""
          - target: linux-i686
            os: linux
            arch: i686
+           build-image: debian:stable
            ext: ""
          - target: linux-armhf
            os: linux
            arch: armhf
+           build-image: debian:stable
            ext: ""
          - target: linux-aarch64
            os: linux
            arch: aarch64
+           build-image: debian:stable
            ext: ""
          - target: windows-x64
            os: windows
            arch: x64
+           build-image: debian:stable
            ext: ".exe"
          - target: windows-x86
            os: windows
            arch: x86
+           build-image: debian:stable
            ext: ".exe"
+    container: ${{ matrix.build-image }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
       - name: Prepare Build Environemnt
         run: |
-             sudo apt-get update
-             sudo apt-get -y install build-essential cmake gcc-i686-linux-gnu
-             sudo apt-get -y install gcc-arm-linux-gnueabihf libc6-dev-armhf-cross gcc-aarch64-linux-gnu libc6-dev-arm64-cross
-             sudo apt-get -y install gcc-mingw-w64-x86-64 gcc-mingw-w64-i686
+             apt-get update
+             apt-get -y install build-essential cmake gcc-i686-linux-gnu openssh-client
+             apt-get -y install gcc-arm-linux-gnueabihf libc6-dev-armhf-cross gcc-aarch64-linux-gnu libc6-dev-arm64-cross
+             apt-get -y install gcc-mingw-w64-x86-64 gcc-mingw-w64-i686
       - name: Build
+        shell: bash
         run: |
              ./build_cmake.sh ${{ matrix.target }}
       - name: Create checksum
+        shell: bash
         run: |
              md5sum build/${{ matrix.target }}/qwfwd${{ matrix.ext }} > build/${{ matrix.target }}/qwfwd.md5
       - name: Setup SSH
+        shell: bash
         env:
           SSH_AUTH_SOCK: /tmp/ssh_agent.sock
         run: |
           ssh-agent -a $SSH_AUTH_SOCK > /dev/null
           ssh-add - <<< "${{ secrets.SSH_PRIVATE_KEY }}"
       - name: Set date
+        shell: bash
         run: |
-          sudo timedatectl set-timezone Europe/Amsterdam
-          echo "DATE=$(date "+%Y%m%d-%H%M%S")" >> $GITHUB_ENV
+          echo "DATE=$(TZ="Europe/Amsterdam" date "+%Y%m%d-%H%M%S")" >> $GITHUB_ENV
       - name: Deploy
+        shell: bash
         env:
           SSH_AUTH_SOCK: /tmp/ssh_agent.sock
         run: |
