@@ -27,6 +27,8 @@ static int argc;
 static char **argv;
 // }
 
+volatile qbool reload = false;
+
 /*
 ===========
 SV_Serverinfo_f
@@ -96,6 +98,11 @@ static void Cmd_Quit_f(void)
 		ps.wanttoexit = true; // delayed exit, clean
 }
 
+static void sighup_handler(int signal)
+{
+	reload = true;
+}
+
 DWORD WINAPI FWD_proc(void *lpParameter)
 {
 	if (!lpParameter)
@@ -152,6 +159,14 @@ DWORD WINAPI FWD_proc(void *lpParameter)
 
 	while(!ps.wanttoexit)
 	{
+		if (reload)
+		{
+			Cmd_WhitelistPurge_f();
+			Cbuf_InsertText("exec qwfwd.cfg\n");
+			Cbuf_Execute();
+			reload = false;
+		}
+
 		Cbuf_Execute();			// Process console commands.
 		FWD_update_peers();		// Do basic proxy job.
 		QRY_Frame();			// Do query related job.
@@ -180,6 +195,10 @@ int main(int _argc, char *_argv[])
 
 	#ifdef SIGPIPE
 	signal(SIGPIPE, SIG_IGN);
+	#endif
+
+	#ifndef _WIN32
+	signal(SIGHUP, sighup_handler);
 	#endif
 
 	srand((unsigned) time (NULL));
