@@ -219,7 +219,18 @@ static void FWD_network_update(void)
 	/* Sleep for some time, wake up immidiately if there input packet. */
 	tv.tv_sec = 0;
 	tv.tv_usec = 100000; // 100 ms
+
+retry:
 	retval = select(i1, &rfds, (fd_set *)0, (fd_set *)0, &tv);
+	if (retval < 0)
+	{
+		if (errno == EINTR)
+		{
+			goto retry;
+		}
+		perror("select");
+		return;
+	}
 
 	// read console input.
 	// NOTE: we do not do that if we are in DLL mode...

@@ -466,6 +466,7 @@ qbool				SV_IsBanned (struct sockaddr_in *addr);
 
 // Whitelist system.
 void Whitelist_Init(void);
+void Cmd_WhitelistPurge_f (void);
 qbool SV_IsWhitelisted(struct sockaddr_in *addr);
 
 #ifdef __cplusplus

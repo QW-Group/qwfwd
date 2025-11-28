@@ -16,6 +16,7 @@ void Whitelist_Init(void)
 	Cmd_AddCommand("whitelist", Cmd_Whitelist_f);
 	Cmd_AddCommand("whitelistadd", Cmd_WhitelistAdd_f);
 	Cmd_AddCommand("whitelistremove", Cmd_WhitelistRemove_f);
+	Cmd_AddCommand("whitelistpurge", Cmd_WhitelistPurge_f);
 }
 
 qbool SV_IsWhitelisted(struct sockaddr_in *addr)
@@ -134,4 +135,10 @@ static void Cmd_WhitelistRemove_f(void)
 	}
 
 	Sys_Printf("error: %s not found in whitelist\n", ip_str);
+}
+
+void Cmd_WhitelistPurge_f(void)
+{
+	whitelist_count = 0;
+	memset(whitelist, 0, WHITELIST_MAX_ADDRS * sizeof(unsigned int));
 }
