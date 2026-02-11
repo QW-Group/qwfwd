@@ -123,6 +123,7 @@ extern "C" {
 #define QWFWD_DIR "qwfwd"
 
 #define QWFWD_PRX_KEY "prx"
+#define QWFWD_PASSWD_KEY "password"
 
 #define	MAX_INFO_STRING		1024
 #define MAX_INFO_KEY 		64
