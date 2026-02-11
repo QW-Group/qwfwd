@@ -246,7 +246,7 @@ static void SVC_DirectConnect (void)
 	// check user's password
 	if (password->string[0])
 	{
-		Info_ValueForKey(passwd, QWFWD_PASSWD_KEY, passwd, sizeof(passwd));
+		Info_ValueForKey(userinfo, QWFWD_PASSWD_KEY, passwd, sizeof(passwd));
 		if (strcmp(passwd, password->string))
 		{
 			if ( proto == pr_qw )
