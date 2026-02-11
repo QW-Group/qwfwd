@@ -19,6 +19,7 @@ cvar_t *hostport;
 cvar_t *countrycode;
 cvar_t *city;
 cvar_t *coords;
+cvar_t *password;
 
 proxy_static_t ps;
 
@@ -131,6 +132,7 @@ DWORD WINAPI FWD_proc(void *lpParameter)
 	countrycode		= Cvar_Get("countrycode",	"", CVAR_SERVERINFO);
 	city			= Cvar_Get("city",		"", CVAR_SERVERINFO);
 	coords			= Cvar_Get("coords",		"", CVAR_SERVERINFO);
+	password		= Cvar_Get("password",		"", CVAR_SERVERINFO);
 
 	// register basic commands
 	Cmd_AddCommand("quit", Cmd_Quit_f);

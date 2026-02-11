@@ -225,6 +225,7 @@ extern proxy_static_t ps;
 
 extern cvar_t *developer, *maxclients, *hostname;
 extern cvar_t *hostport, *countrycode, *city, *coords;
+extern cvar_t *password;
 
 //
 // token.c
