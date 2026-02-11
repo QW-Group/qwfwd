@@ -123,7 +123,6 @@ extern "C" {
 #define QWFWD_DIR "qwfwd"
 
 #define QWFWD_PRX_KEY "prx"
-#define QWFWD_PASSWD_KEY "password"
 
 #define	MAX_INFO_STRING		1024
 #define MAX_INFO_KEY 		64
@@ -226,7 +225,6 @@ extern proxy_static_t ps;
 
 extern cvar_t *developer, *maxclients, *hostname;
 extern cvar_t *hostport, *countrycode, *city, *coords;
-extern cvar_t *password;
 
 //
 // token.c

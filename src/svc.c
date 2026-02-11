@@ -185,7 +185,7 @@ static void SVC_DirectConnect (void)
 {
 	unsigned int i = FindChallengeForAddr(&net_from);
 
-	char userinfo[MAX_INFO_STRING], prx[MAX_INFO_KEY * 4 /* we allow huge size for prx */], passwd[MAX_INFO_KEY], *at;
+	char userinfo[MAX_INFO_STRING], prx[MAX_INFO_KEY * 4 /* we allow huge size for prx */], *at;
 	peer_t *p = NULL;
 	int qport, port, challenge;
 	protocol_t proto;
@@ -241,24 +241,6 @@ static void SVC_DirectConnect (void)
 	{
 		Netchan_OutOfBandPrint (net_from_socket, &net_from, "%c\n" "proxy@%s is full\n\n", A2C_PRINT, hostname->string);
 		return; // no more free slots
-	}
-
-	// check user's password
-	if (password->string[0])
-	{
-		Info_ValueForKey(userinfo, QWFWD_PASSWD_KEY, passwd, sizeof(passwd));
-		if (strcmp(passwd, password->string))
-		{
-			if ( proto == pr_qw )
-			{
-				Netchan_OutOfBandPrint (net_from_socket, &net_from, "%c\n proxy@%s: invalid password.\n", A2C_PRINT, hostname->string);
-			}
-			else
-			{
-				Netchan_OutOfBandPrint (net_from_socket, &net_from, "print\n proxy@%s: invalid password.\n", hostname->string);
-			}
-			return;
-		}
 	}
 
 	// check prx setinfo key
