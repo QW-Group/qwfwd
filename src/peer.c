@@ -7,6 +7,16 @@
 peer_t *peers = NULL;
 static int userid = 0;
 
+static int probe_sockets_open = 0;
+#define MAX_TOTAL_PROBE_SOCKETS 64
+
+static const char probe_payload_qw[]  = { 0xff, 0xff, 0xff, 0xff, 'p', 'i', 'n', 'g', '\n' };
+static const char probe_payload_gen[] = { A2A_PING, 0 };
+
+cvar_t *sv_pathprobe_enable;
+cvar_t *sv_pathprobe_count;
+cvar_t *sv_pathprobe_delay;
+
 peer_t	*FWD_peer_by_addr(struct sockaddr_in *from)
 {
 	peer_t *p;
@@ -93,6 +103,8 @@ peer_t	*FWD_peer_new(const char *remote_host, int remote_port, struct sockaddr_i
 // free peer data, perform unlink if requested
 static void FWD_peer_free(peer_t *peer, qbool unlink)
 {
+	int i;
+
 	if (!peer)
 		return;
 
@@ -122,9 +134,21 @@ static void FWD_peer_free(peer_t *peer, qbool unlink)
 		}
 	}
 
+	// free probes if any
+	for (i = 0; i < peer->num_probes; i++) {
+		if (peer->probes[i].s != INVALID_SOCKET && peer->probes[i].s != peer->s) {
+			closesocket(peer->probes[i].s);
+			peer->probes[i].s = INVALID_SOCKET;
+			probe_sockets_open--;
+		}
+	}
+
 	// free all data related to peer
-	if (peer->s) // there should be no zero socket, it's stdin
+	if (peer->s) { // there should be no zero socket, it's stdin
 		closesocket(peer->s);
+		peer->s = INVALID_SOCKET;
+	}
+
 	Sys_free(peer);
 }
 
@@ -181,26 +205,240 @@ static void FWD_check_drop(void)
 	}
 }
 
+// Start probing for the best source port
+void FWD_PeerStartProbing(peer_t *p)
+{
+	int count = sv_pathprobe_count->integer;
+	int i;
+	const void *payload;
+	int payload_len;
+
+	if (count < 1) count = 1;
+	if (count > MAX_PING_PROBES) count = MAX_PING_PROBES;
+
+	// Close any existing probe sockets to prevent leaks on reuse
+	for (i = 0; i < MAX_PING_PROBES; i++) {
+		if (p->probes[i].s != INVALID_SOCKET && p->probes[i].s > 0 && p->probes[i].s != p->s) {
+			closesocket(p->probes[i].s);
+			probe_sockets_open--;
+		}
+	}
+
+	p->ps = ps_pingprobe;
+	p->num_probes = 0;
+	memset(p->probes, 0, sizeof(p->probes));
+	for (i = 0; i < MAX_PING_PROBES; i++) {
+		p->probes[i].s = INVALID_SOCKET;
+	}
+	p->probe_start_time = Sys_DoubleTime();
+
+	if (p->proto == pr_qw) {
+		payload = probe_payload_qw;
+		payload_len = sizeof(probe_payload_qw);
+	} else {
+		payload = probe_payload_gen;
+		payload_len = sizeof(probe_payload_gen);
+	}
+
+	// Use existing socket as first probe
+	if (p->s != INVALID_SOCKET) {
+		p->probes[0].s = p->s;
+		p->probes[0].send_time = Sys_DoubleTime();
+		p->probes[0].rtt = -1;
+		p->probes[0].samples_sent = 1;
+		p->num_probes++;
+		NET_SendPacket(p->s, payload_len, payload, &p->to);
+	}
+
+	// Create additional sockets
+	for (i = p->num_probes; i < count; i++) {
+		if (probe_sockets_open >= MAX_TOTAL_PROBE_SOCKETS) {
+			Sys_DPrintf("Global probe socket limit reached (%d), skipping probe socket\n", probe_sockets_open);
+			break;
+		}
+
+		int s = NET_UDP_OpenSocket(NULL, 0, false);
+		if (s != INVALID_SOCKET) {
+			p->probes[i].s = s;
+			p->probes[i].send_time = Sys_DoubleTime();
+			p->probes[i].rtt = -1;
+			p->probes[i].samples_sent = 1;
+			p->num_probes++;
+			probe_sockets_open++;
+			NET_SendPacket(s, payload_len, payload, &p->to);
+		}
+	}
+	
+	Sys_DPrintf("Started probing %d ports for peer %s\n", p->num_probes, p->name);
+}
+
+// Check if probing is done or timed out
+static void FWD_CheckProbeCompletion(peer_t *p)
+{
+	int i;
+	int best_idx = -1;
+	double best_rtt = 99999.0;
+	double timeout = sv_pathprobe_delay->value / 1000.0;
+	qbool all_finished = true;
+	int fully_sampled = 0;
+
+	if (timeout <= 0.0) timeout = 1.0;
+	if (timeout > 10.0) timeout = 10.0;
+
+	// Check if all probes are finished
+	for (i = 0; i < p->num_probes; i++) {
+		if (p->probes[i].samples_received >= 2) fully_sampled++;
+
+		if (p->probes[i].samples_received < 3) {
+			all_finished = false;
+		}
+	}
+
+	// Wait for at least 2 samples from everyone to filter jitter, unless timed out
+	if (fully_sampled == p->num_probes)
+		goto select_best; 
+
+	// Only proceed if we timed out or all probes finished
+	if (!all_finished && Sys_DoubleTime() - p->probe_start_time <= timeout)
+		return;
+
+select_best:
+	// Find best RTT
+	for (i = 0; i < p->num_probes; i++) {
+		if (p->probes[i].rtt > 0 && p->probes[i].rtt < best_rtt) {
+			best_rtt = p->probes[i].rtt;
+			best_idx = i;
+		}
+	}
+	
+	if (best_idx != -1) {
+		Sys_DPrintf("Probe finished in %.2f ms. Best RTT: %.2f ms (idx %d)\n", (Sys_DoubleTime() - p->probe_start_time) * 1000.0, best_rtt * 1000.0, best_idx);
+		p->s = p->probes[best_idx].s;
+
+		// Notify client about the best ping found
+		if (p->proto == pr_qw) {
+			Netchan_OutOfBandPrint(net_socket, &p->from, "%c[qwfwd] Best RTT: %.2f ms\n", A2C_PRINT, best_rtt * 1000.0);
+		} else {
+			Netchan_OutOfBandPrint(net_socket, &p->from, "print\n[qwfwd] Best RTT: %.2f ms\n", best_rtt * 1000.0);
+		}
+
+	} else {
+		Sys_DPrintf("Probe finished. No reply, using default.\n");
+		p->s = p->probes[0].s; // Fallback to first
+	}
+	
+	// Close other sockets
+	for (i = 0; i < p->num_probes; i++) {
+		if (p->probes[i].s != p->s && p->probes[i].s != INVALID_SOCKET) {
+			closesocket(p->probes[i].s);
+			p->probes[i].s = INVALID_SOCKET;
+			probe_sockets_open--;
+		}
+	}
+
+	// Send connection packet to client now that we are ready
+	if (p->proto == pr_qw) {
+		Netchan_OutOfBandPrint(net_socket, &p->from, "%c", S2C_CONNECTION);
+	} else {
+		Netchan_OutOfBandPrint(net_socket, &p->from, "connectResponse");
+	}
+	
+	p->ps = ps_connecting;
+	p->connect = 0;
+}
+
+// Process incoming packets on probe sockets
+static void FWD_ProcessProbes(peer_t *p, net_pollfd_t *pfds)
+{
+	int i;
+	int pfd_idx = 0;
+	const void *payload;
+	int payload_len;
+
+	if (p->proto == pr_qw) {
+		payload = probe_payload_qw;
+		payload_len = sizeof(probe_payload_qw);
+	} else {
+		payload = probe_payload_gen;
+		payload_len = sizeof(probe_payload_gen);
+	}
+
+	for (i = 0; i < p->num_probes; i++) {
+		if (p->probes[i].s != INVALID_SOCKET) {
+			if (pfds[pfd_idx].revents & POLLIN) {
+				if (NET_GetPacket(p->probes[i].s, &net_message)) {
+					if (NET_CompareAddress(&p->to, &net_from)) {
+						// Any reply from the server on the probe socket is enough to measure RTT
+						double rtt = Sys_DoubleTime() - p->probes[i].send_time;
+
+						p->probes[i].samples_received++;
+
+						if (p->probes[i].rtt == -1 || rtt < p->probes[i].rtt) {
+							p->probes[i].rtt = rtt;
+							Sys_DPrintf("Pathprobe reply on socket %d, sample %d, RTT %.2f ms\n", p->probes[i].s, p->probes[i].samples_received, p->probes[i].rtt * 1000.0);
+						}
+
+						// Send next sample if needed
+						if (p->probes[i].samples_sent < 3) {
+							p->probes[i].samples_sent++;
+							p->probes[i].send_time = Sys_DoubleTime();
+							NET_SendPacket(p->probes[i].s, payload_len, payload, &p->to);
+						}
+					}
+				}
+			}
+			pfd_idx++;
+		}
+	}
+}
+
 static void FWD_network_update(void)
 {
-	fd_set rfds;
-	struct timeval tv;
+	net_pollfd_t *pfds = NULL;
+	int nfds = 0;
+	int max_fds = 2; // net + stdin
 	int retval;
-	int i1;
+	int net_idx = -1;
+	int stdin_idx = -1;
 	peer_t *p;
+	int i;
+	int current_pfd_idx;
 
-	FD_ZERO(&rfds);
+	// Calculate max FDs needed
+	for (p = peers; p; p = p->next) {
+		if (p->ps == ps_pingprobe) {
+			max_fds += p->num_probes;
+		} else {
+			max_fds++;
+		}
+	}
+
+	pfds = Sys_malloc(sizeof(net_pollfd_t) * max_fds);
 
 	// select on main server socket
-	FD_SET(net_socket, &rfds);
-	i1 = net_socket + 1;
+	pfds[nfds].fd = net_socket;
+	pfds[nfds].events = POLLIN;
+	pfds[nfds].revents = 0;
+	net_idx = nfds++;
 
 	for (p = peers; p; p = p->next)
 	{
 		// select on peers sockets
-		FD_SET(p->s, &rfds);
-		if (p->s >= i1)
-			i1 = p->s + 1;
+		if (p->ps == ps_pingprobe) {
+			for (i = 0; i < p->num_probes; i++) {
+				if (p->probes[i].s != INVALID_SOCKET) {
+					pfds[nfds].fd = p->probes[i].s;
+					pfds[nfds].events = POLLIN;
+					pfds[nfds].revents = 0;
+					nfds++;
+				}
+			}
+		} else {
+			pfds[nfds].fd = p->s;
+			pfds[nfds].events = POLLIN;
+			pfds[nfds].revents = 0;
+			nfds++;
+		}
 	}
 
 // if not DLL - read stdin
@@ -209,38 +447,50 @@ static void FWD_network_update(void)
 	// try read stdin only if connected to a terminal.
 	if (isatty(STDIN) && isatty(STDOUT))
 	{
-		FD_SET(STDIN, &rfds);
-		if (STDIN >= i1)
-			i1 = STDIN + 1;
+		pfds[nfds].fd = STDIN;
+		pfds[nfds].events = POLLIN;
+		pfds[nfds].revents = 0;
+		stdin_idx = nfds++;
 	}
 	#endif // _WIN32
 #endif
 
-	/* Sleep for some time, wake up immidiately if there input packet. */
-	tv.tv_sec = 0;
-	tv.tv_usec = 100000; // 100 ms
-
 retry:
-	retval = select(i1, &rfds, (fd_set *)0, (fd_set *)0, &tv);
+	retval = qpoll(pfds, nfds, 100);
 	if (retval < 0)
 	{
 		if (errno == EINTR)
 		{
 			goto retry;
 		}
-		perror("select");
+		perror("poll");
+		Sys_free(pfds);
 		return;
 	}
 
 	// read console input.
 	// NOTE: we do not do that if we are in DLL mode...
-	Sys_ReadSTDIN(&ps, rfds);
+	if (stdin_idx != -1 && (pfds[stdin_idx].revents & POLLIN)) {
+		fd_set rfds;
+		FD_ZERO(&rfds);
+		FD_SET(STDIN, &rfds);
+		Sys_ReadSTDIN(&ps, rfds);
+	}
 
-	if (retval <= 0)
+	// Handle timeouts regardless of select result
+	for (p = peers; p; p = p->next) {
+		if (p->ps == ps_pingprobe) {
+			FWD_CheckProbeCompletion(p);
+		}
+	}
+
+	if (retval <= 0) {
+		Sys_free(pfds);
 		return;
+	}
 
 	// if we have input packet on main server/proxy socket, then read it
-	if(FD_ISSET(net_socket, &rfds))
+	if(net_idx != -1 && (pfds[net_idx].revents & POLLIN))
 	{
 		qbool connectionless;
 		int cnt;
@@ -312,9 +562,23 @@ retry:
 	}
 
 	// now lets check peers sockets, perhaps we have input packets too
+	current_pfd_idx = 1; // skip net_socket
 	for (p = peers; p; p = p->next)
 	{
-		if(FD_ISSET(p->s, &rfds))
+		if (p->ps == ps_pingprobe) {
+			FWD_ProcessProbes(p, &pfds[current_pfd_idx]);
+			
+			// count how many we used
+			for (i = 0; i < p->num_probes; i++) {
+				if (p->probes[i].s != INVALID_SOCKET) current_pfd_idx++;
+			}
+			
+			// Check completion again in case we got last packet
+			FWD_CheckProbeCompletion(p);
+			continue; // Skip normal processing for this peer
+		}
+
+		if (pfds[current_pfd_idx].revents & POLLIN)
 		{
 			// yeah, we have packet, read it then
 			for (;;)
@@ -350,9 +614,11 @@ retry:
 //				time(&p->last);
 
 			} // for (;;)
-		} // if(FD_ISSET(p->s, &rfds))
+		} // if(POLLIN)
+		
+		current_pfd_idx++;
 
-		if (p->ps == ps_challenge)
+		if (p->ps == ps_challenge || p->ps == ps_connecting)
 		{
 			// send challenge time to time
 			if (time(NULL) - p->connect > 2)
@@ -362,6 +628,8 @@ retry:
 			}
 		}
 	} // for (p = peers; p; p = p->next)
+	
+	Sys_free(pfds);
 }
 
 int FWD_peers_count(void)
@@ -419,6 +687,10 @@ void FWD_Init(void)
 {
 	peers = NULL;
 	userid = 0;
+
+	sv_pathprobe_enable = Cvar_Get("sv_pathprobe_enable", "1", 0);
+	sv_pathprobe_count = Cvar_Get("sv_pathprobe_count", "64", 0);
+	sv_pathprobe_delay = Cvar_Get("sv_pathprobe_delay", "1000", 0);
 
 	Cmd_AddCommand("cllist", FWD_Cmd_ClList_f);
 }

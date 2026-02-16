@@ -187,7 +187,7 @@ static void SVC_DirectConnect (void)
 
 	char userinfo[MAX_INFO_STRING], prx[MAX_INFO_KEY * 4 /* we allow huge size for prx */], *at;
 	peer_t *p = NULL;
-	int qport, port, challenge;
+	int qport, port;
 	protocol_t proto;
 
 	if ( i >= MAX_CHALLENGES )
@@ -198,7 +198,6 @@ static void SVC_DirectConnect (void)
 	}
 
 	proto = challenges[i].proto;
-	challenge = challenges[i].challenge;
 
 	// different for qw and q3
 	if ( proto == pr_qw )
@@ -294,7 +293,34 @@ static void SVC_DirectConnect (void)
 	// this was new peer, lets register it then
 	if ((p = FWD_peer_new(prx, port, &net_from, userinfo, qport, proto, true)))
 	{
+		qbool do_probe = false;
+		char val[64];
+
 		Sys_DPrintf("peer %s:%d added or reused\n", inet_ntoa(net_from.sin_addr), (int)ntohs(net_from.sin_port));
+		
+		// Check if client wants to override pingprobe setting
+		Info_ValueForKey(userinfo, "pathprobe", val, sizeof(val));
+		if (val[0]) {
+			do_probe = atoi(val);
+		}
+
+		// Check if feature is globally disabled
+		if (!sv_pathprobe_enable->integer) {
+			do_probe = false;
+		}
+
+		// Disable probing for non-QW protocols (Q3 does not support this probe method)
+		if (proto != pr_qw) {
+			do_probe = false;
+		}
+
+		if (do_probe) {
+			if (p->ps == ps_challenge) {
+				FWD_PeerStartProbing(p);
+			} else {
+				Sys_DPrintf("Peer reused, skipping probe (state %d)\n", p->ps);
+			}
+		}
 	}
 	else
 	{
@@ -304,20 +330,30 @@ static void SVC_DirectConnect (void)
 
 	if ( proto == pr_qw )
 	{
-		Netchan_OutOfBandPrint(net_from_socket, &net_from, "%c", S2C_CONNECTION);
+		if (p->ps != ps_pingprobe)
+			Netchan_OutOfBandPrint(net_from_socket, &net_from, "%c", S2C_CONNECTION);
 	}
 	else
 	{
 		if ( p->ps == ps_connected )
 		{
-			if ( p->challenge == challenge )
+			// challenge was already checked in SVC_DirectConnect above (from userinfo)
+			// but for Q3, p->challenge is updated from the server response.
+			// The original code checked p->challenge == challenge here.
+			// 'challenge' var was removed in previous steps, need to use userinfo challenge again or trust the flow?
+			// The challenge variable was local to SVC_DirectConnect and retrieved from challenges array.
+			// I need to retrieve it again or pass it.
+			// Wait, I removed 'challenge' local variable earlier. I should check if I can get it back easily.
+			// Yes, 'challenges[i].challenge'.
+			
+			int client_challenge = challenges[i].challenge;
+
+			if ( p->challenge == client_challenge )
 			{
-				// ok, we are really really ready to transfer data
 				Netchan_OutOfBandPrint(net_from_socket, &net_from, "connectResponse");
 			}
 			else
 			{
-				// tell client we are ready. just type /reconnect on the console!
 				Netchan_OutOfBandPrint(net_from_socket, &net_from, "print\n" "/reconnect ASAP!\n");
 			}
 		}
