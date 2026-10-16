@@ -203,6 +203,8 @@ typedef struct peer
 	double mp_tx_at;				// last client packet forwarded to remote
 	int mp_rx_count;				// packets from remote on s since last tick
 	int mp_rx_rate;					// ... in the previous 1s tick (pps)
+	double mp_verify_at;			// silence seen, verify pings sent at; 0 = idle
+	qbool mp_vack;					// alt_s answered the verify ping
 } peer_t;
 
 // used for passing params for thread

@@ -93,6 +93,7 @@ static void FWD_mp_switch(peer_t *p, double now, const char *why)
 	p->mp_switch_at = p->mp_rx_at = now;
 	// new primary must prove it streams before silence can fire again
 	p->mp_rx_rate = p->mp_rx_count = 0;
+	p->mp_verify_at = 0;
 }
 
 static void FWD_mp_tick(peer_t *p)
@@ -113,9 +114,21 @@ static void FWD_mp_tick(peer_t *p)
 	// silent for 500ms means the path died. Loading/downloading = client quiet too, no switch.
 	// signon: client streams but server only answers when it has data, so also require the
 	// server to have been streaming (>= 20 pps last second; in game it is sv fps, ~77).
-	if (p->mp_rx_rate >= 20 && now - p->mp_tx_at < 0.1 && now - p->mp_rx_at > 0.5 &&
-		!p->mp_miss[1] && now - p->mp_switch_at > 1.0)
-		FWD_mp_switch(p, now, "silence");
+	// A map change also stalls the server, so silence only arms a check: ping both paths and
+	// switch if alt_s answers while s stays mute. Stalled server answers neither; s answering
+	// (any packet counts) means the path is fine.
+	if (p->mp_verify_at) {
+		if (p->mp_rx_at > p->mp_verify_at || now - p->mp_verify_at > 1.0)
+			p->mp_verify_at = 0;
+		else if (p->mp_vack)
+			FWD_mp_switch(p, now, "silence");
+	} else if (p->mp_rx_rate >= 20 && now - p->mp_tx_at < 0.1 && now - p->mp_rx_at > 0.5 &&
+		!p->mp_miss[1] && now - p->mp_switch_at > 1.0) {
+		p->mp_verify_at = now;
+		p->mp_vack = false;
+		Netchan_OutOfBandPrint(p->s, &p->to, "%c\n", A2A_PING);
+		Netchan_OutOfBandPrint(p->alt_s, &p->to, "%c\n", A2A_PING);
+	}
 
 	if (now - p->mp_ping_at < 1.0)
 		return;
@@ -174,6 +187,9 @@ static void FWD_read_remote(peer_t *p, int sock, int idx)
 		}
 
 		if (net_message.cursize == 1 && net_message.data[0] == A2A_ACK) {
+			// ponytail: ACK carries no id, a late health-ping ack could count; window is one RTT
+			if (idx == 1 && p->mp_verify_at)
+				p->mp_vack = true;
 			if (p->alt_s != INVALID_SOCKET)
 				FWD_mp_ack(p, idx);
 			continue;
@@ -554,6 +570,7 @@ static void FWD_CheckProbeCompletion(peer_t *p) {
       p->mp_rtt[1] = alt_rtt * 1000.0;
       p->mp_ping_at = p->mp_switch_at = p->mp_rx_at = p->mp_tx_at = 0;
       p->mp_miss[0] = p->mp_miss[1] = p->mp_wins = p->mp_rx_count = p->mp_rx_rate = 0;
+      p->mp_verify_at = 0;
     }
   }
 
