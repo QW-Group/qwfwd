@@ -2,9 +2,7 @@
 	stun.c - minimal RFC 5389 STUN Binding Request/Response responder
 
 	CVars:
-	  stun_enable          - 0=off (default), 1=on. Off by default: this
-	                         is an opt-in feature, existing deployments
-	                         are unaffected until the operator enables it.
+	  stun_enable          - 1=on (default), 0=off.
 	  stun_rate_per_ip     - max STUN responses/sec to a single source IP
 	                         (default 10)
 	  stun_rate_global     - max STUN responses/sec across all source IPs
@@ -17,7 +15,7 @@
 	standard WebRTC NAT traversal - so making this proxy answer STUN
 	Binding Requests on its existing UDP port gives the browser a real,
 	unspoofable RTT measurement, "for free" the moment an operator
-	updates their qwfwd binary and flips stun_enable - no per-proxy
+	updates their qwfwd binary - no per-proxy
 	HTTPS certificate, no separate service, no config beyond one cvar.
 
 	Security posture (why this is safe to expose, briefly - see the
@@ -27,7 +25,7 @@
 	    below what's considered a volumetric DoS vector (DNS ~28-54x,
 	    NTP ~557x) - STUN is not a useful reflection amplifier.
 	  - Still a UDP reflector in principle (spoofed source IP redirects a
-	    small reply elsewhere), so this responder is opt-in and rate
+	    small reply elsewhere), so this responder is rate
 	    limited per-IP and globally, on top of whatever perimeter
 	    filtering the operator already runs.
 	  - No cookie/nonce challenge is possible here (unlike the mesh
@@ -241,7 +239,7 @@ qbool STUN_HandlePacket(const byte *data, int len, struct sockaddr_in *from)
 
 void STUN_Init(void)
 {
-	stun_enable      = Cvar_Get("stun_enable",      "0",   0);
+	stun_enable      = Cvar_Get("stun_enable",      "1",   0);
 	stun_rate_per_ip = Cvar_Get("stun_rate_per_ip", "10",  0);
 	stun_rate_global = Cvar_Get("stun_rate_global", "500", 0);
 

@@ -139,7 +139,7 @@ This project is licensed under the GPL-2.0 License - see the [LICENSE.md](LICENS
 
 ## Multipath standby
 
-With `multipath_enable 1` (default 0) the runner-up PathProbe port is kept as
+By default (`multipath_enable 1`) the runner-up PathProbe port is kept as
 a standby path to the server. Both paths get a health ping once per second;
 the proxy switches to the standby on primary loss, on a sustained RTT gain, or
 when the server stream goes silent while the client is still sending. The

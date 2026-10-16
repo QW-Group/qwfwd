@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
 """
-Teste automatizado de integração para o STUN responder (opt-in) do qwfwd.
+Teste automatizado de integração para o STUN responder do qwfwd.
 
 Sobe UMA instância real de qwfwd.exe com stun_enable=1 e fala com ela via
 UDP puro construindo pacotes STUN (RFC 5389) crus, validando: (1) Binding
 Request bem formado recebe Binding Response correto byte a byte, incluindo
 o XOR-MAPPED-ADDRESS calculado certo; (2) pacotes malformados/truncados são
 descartados silenciosamente (sem resposta, sem crash); (3) rate limiting
-por IP funciona (flood não é respondido 1:1); (4) com stun_enable=0
-(default), nenhum Binding Request é respondido, e o dispatch Quake normal
+por IP funciona (flood não é respondido 1:1); (4) com stun_enable=0, nenhum Binding Request é respondido, e o dispatch Quake normal
 (pingstatus) continua intocado.
 
 Não depende de masters reais nem de internet - roda 100% local e
@@ -158,18 +157,18 @@ def test_stun_enabled():
         proc.wait(timeout=5)
 
 
-def test_stun_disabled_by_default():
+def test_stun_disabled():
     port = 30097
-    proc = start_qwfwd(port, [])  # no +stun_enable at all - must default off
+    proc = start_qwfwd(port, ["+stun_enable", "0"])
     check("disabled_process_alive_after_start", proc.poll() is None, f"exit code: {proc.poll()}")
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
-        # --- Test 7: with the default (off) config, a well-formed Binding
-        # Request must get NO reply at all - opt-in means opt-in ---
+        # --- Test 7: with stun_enable 0, a well-formed Binding
+        # Request must get NO reply at all ---
         txid = bytes(range(12))
         reply = send_recv(sock, build_binding_request(txid), port, timeout=0.7)
-        check("stun_disabled_by_default_no_reply", reply is None, f"unexpected reply={reply!r}")
+        check("stun_disabled_no_reply", reply is None, f"unexpected reply={reply!r}")
 
         # --- Test 8: existing protocol still fine with the feature off ---
         reply = send_recv(sock, b"\xff\xff\xff\xffpingstatus", port)
@@ -186,8 +185,8 @@ def test_stun_disabled_by_default():
 def main():
     print("=== stun_enable=1 ===")
     test_stun_enabled()
-    print("\n=== stun_enable default (off) ===")
-    test_stun_disabled_by_default()
+    print("\n=== stun_enable 0 ===")
+    test_stun_disabled()
 
     failed = [r for r in results if r[1] == "FAIL"]
     print(f"\n{len(results) - len(failed)}/{len(results)} passed")
