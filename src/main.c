@@ -5,6 +5,7 @@
 */
 
 #include "qwfwd.h"
+#include "stun.h"
 
 #ifndef _WIN32
 #define DWORD unsigned int
@@ -132,6 +133,13 @@ DWORD WINAPI FWD_proc(void *lpParameter)
 	city			= Cvar_Get("city",		"", CVAR_SERVERINFO);
 	coords			= Cvar_Get("coords",		"", CVAR_SERVERINFO);
 
+	sv_pathprobe_enable = Cvar_Get("sv_pathprobe_enable", "1", 0);
+	sv_pathprobe_count  = Cvar_Get("sv_pathprobe_count",  "64", 0);
+	sv_pathprobe_delay  = Cvar_Get("sv_pathprobe_delay",  "1000", 0);
+	multipath_enable    = Cvar_Get("multipath_enable",    "0", 0); // off by default: enable per server (canary)
+	multipath_switch_ms = Cvar_Get("multipath_switch_ms", "15", 0);
+	multipath_notify    = Cvar_Get("multipath_notify",    "&cf80[qwfwd]&r &cff0Route to server degraded, switched to backup path&r", 0); // &cRGB = ezQuake console color
+
 	// register basic commands
 	Cmd_AddCommand("quit", Cmd_Quit_f);
 	Cmd_AddCommand("serverinfo", SV_Serverinfo_f);
@@ -147,7 +155,8 @@ DWORD WINAPI FWD_proc(void *lpParameter)
 	Ban_Init();				// init bans, this will exec "qwfwd_listip.cfg" as well, so you don't have to put it in qwfwd.cfg
 	NET_Init();				// init network
 	FWD_Init();				// init peers
-	QRY_Init();				// init query 
+	QRY_Init();				// init query
+	STUN_Init();			// init STUN responder (opt-in, off by default)
 
 	ps.initialized = true;
 

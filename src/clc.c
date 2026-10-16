@@ -9,7 +9,7 @@ static void CL_SendConnectPacket_QW(peer_t *p)
 	char data[2048];
 	char biguserinfo[MAX_INFO_STRING + 32];
 
-	if (p->ps != ps_challenge)
+	if (p->ps != ps_challenge && p->ps != ps_connecting)
 		return;
 
 	// Let the server know what extensions we support.
@@ -107,7 +107,7 @@ static void CL_SendConnectPacket_Q3(peer_t *p)
 	char biguserinfo[MAX_INFO_STRING + 100];
 	sizebuf_t msg;
 
-	if (p->ps != ps_challenge)
+	if (p->ps != ps_challenge && p->ps != ps_connecting)
 		return;
 
 	// add challenge to the temporary userinfo
@@ -147,7 +147,7 @@ static qbool CL_ConnectionlessPacket_Q3 (peer_t *p)
 	// challenge from the server we are connecting to
 	if ( !stricmp(c, "challengeResponse") )
 	{
-		if ( p->ps != ps_challenge )
+		if (p->ps != ps_challenge && p->ps != ps_connecting)
 		{
 			Sys_DPrintf( "Unwanted challenge response received.  Ignored.\n" );
 		}
@@ -177,7 +177,7 @@ static qbool CL_ConnectionlessPacket_Q3 (peer_t *p)
 			return need_forward;
 		}
 
-		if ( p->ps != ps_challenge )
+		if (p->ps != ps_challenge && p->ps != ps_connecting)
 		{
 			Sys_DPrintf ("connectResponse packet while not connecting.  Ignored.\n");
 			return need_forward;

@@ -187,7 +187,7 @@ static void SVC_DirectConnect (void)
 
 	char userinfo[MAX_INFO_STRING], prx[MAX_INFO_KEY * 4 /* we allow huge size for prx */], *at;
 	peer_t *p = NULL;
-	int qport, port, challenge;
+	int qport, port;
 	protocol_t proto;
 
 	if ( i >= MAX_CHALLENGES )
@@ -198,7 +198,6 @@ static void SVC_DirectConnect (void)
 	}
 
 	proto = challenges[i].proto;
-	challenge = challenges[i].challenge;
 
 	// different for qw and q3
 	if ( proto == pr_qw )
@@ -294,7 +293,38 @@ static void SVC_DirectConnect (void)
 	// this was new peer, lets register it then
 	if ((p = FWD_peer_new(prx, port, &net_from, userinfo, qport, proto, true)))
 	{
+		// The cvar is the server-wide default; a client may opt out per
+		// connection with a "pathprobe" userinfo key. It stays a kill switch:
+		// when disabled no client can turn probing back on.
+		qbool do_probe = !!sv_pathprobe_enable->integer;
+		char val[64];
+
 		Sys_DPrintf("peer %s:%d added or reused\n", inet_ntoa(net_from.sin_addr), (int)ntohs(net_from.sin_port));
+
+		// Check if client wants to override pathprobe setting
+		Info_ValueForKey(userinfo, "pathprobe", val, sizeof(val));
+		if (val[0] && !atoi(val)) {
+			do_probe = false;
+		}
+
+		// Disable probing for non-QW protocols (Q3 does not support this probe method)
+		if (proto != pr_qw) {
+			do_probe = false;
+		}
+
+		// no probe on this connect (opt-out, q3, chained): never keep a standby from an earlier one
+		if (!do_probe)
+			FWD_mp_close_alt(p);
+
+		if (do_probe) {
+			if (p->ps == ps_challenge) {
+				FWD_PeerStartProbing(p);
+			} else if (p->ps == ps_pingprobe) {
+				Sys_DPrintf("Peer already probing, ignoring duplicate connect\n");
+			} else {
+				Sys_DPrintf("Peer reused, skipping probe (state %d)\n", p->ps);
+			}
+		}
 	}
 	else
 	{
@@ -304,13 +334,16 @@ static void SVC_DirectConnect (void)
 
 	if ( proto == pr_qw )
 	{
-		Netchan_OutOfBandPrint(net_from_socket, &net_from, "%c", S2C_CONNECTION);
+		if (p->ps != ps_pingprobe)
+			Netchan_OutOfBandPrint(net_from_socket, &net_from, "%c", S2C_CONNECTION);
 	}
 	else
 	{
 		if ( p->ps == ps_connected )
 		{
-			if ( p->challenge == challenge )
+			int client_challenge = challenges[i].challenge;
+
+			if ( p->challenge == client_challenge )
 			{
 				// ok, we are really really ready to transfer data
 				Netchan_OutOfBandPrint(net_from_socket, &net_from, "connectResponse");
@@ -425,6 +458,14 @@ qbool SV_ConnectionlessPacket(void)
 	{
 		SVC_QRY_ParseMasterReply();
 	}
+	else if (QRY_Mesh_IsMeshReply())
+	{
+		// binary mesh reply (from meshprobe) - MUST be intercepted here,
+		// before MSG_ReadString()/Cmd_TokenizeString() below, which treat
+		// the payload as a C string and would silently mangle/drop binary
+		// data at the first embedded zero byte
+		QRY_Mesh_HandleReply();
+	}
 	else
 	{
 		MSG_ReadLong ();		// skip the -1 marker
@@ -455,6 +496,10 @@ qbool SV_ConnectionlessPacket(void)
 			SVC_Ping();
 		else if (!strcmp(c, "pingstatus"))
 			SVC_QRY_PingStatus();
+		else if (!strcmp(c, "meshprobe"))
+			SVC_QRY_MeshProbe();
+		else if (!strcmp(c, "meshstatus"))
+			SVC_QRY_MeshStatus();
 		else if (!strcmp(c,"connect"))
 			SVC_DirectConnect();
 		else if (!strcmp(c,"getchallenge"))

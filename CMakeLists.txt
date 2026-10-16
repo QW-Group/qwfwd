@@ -26,6 +26,7 @@ set(SRC_COMMON
     "${DIR_SRC}/net.c"
     "${DIR_SRC}/peer.c"
     "${DIR_SRC}/query.c"
+    "${DIR_SRC}/stun.c"
     "${DIR_SRC}/svc.c"
     "${DIR_SRC}/sys.c"
     "${DIR_SRC}/token.c"
