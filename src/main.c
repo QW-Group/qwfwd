@@ -5,7 +5,6 @@
 */
 
 #include "qwfwd.h"
-#include "stun.h"
 
 #ifndef _WIN32
 #define DWORD unsigned int
@@ -156,7 +155,6 @@ DWORD WINAPI FWD_proc(void *lpParameter)
 	NET_Init();				// init network
 	FWD_Init();				// init peers
 	QRY_Init();				// init query
-	STUN_Init();			// init STUN responder (on by default, stun_enable 0 to disable)
 
 	ps.initialized = true;
 
