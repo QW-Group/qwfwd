@@ -69,6 +69,7 @@
 #include <netdb.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <poll.h>
 #include <unistd.h>
 #include <syslog.h>
 #include <pthread.h>
@@ -77,6 +78,14 @@
 #define closesocket		close
 #define qerrno			errno
 
+#endif
+
+#ifdef _WIN32
+#define qpoll WSAPoll
+typedef WSAPOLLFD net_pollfd_t;
+#else
+#define qpoll poll
+typedef struct pollfd net_pollfd_t;
 #endif
 
 #ifndef INVALID_SOCKET
@@ -136,9 +145,24 @@ typedef enum
 typedef enum
 {
 	ps_drop,		// we should drop this peer soon
+	ps_pingprobe,	// probing source ports
 	ps_challenge,	// peer getting a challenge
+	ps_connecting,	// challenge done, waiting for connection ack
 	ps_connected	// peer fully connected
 } peer_state_t;
+
+
+#define MAX_PING_PROBES 64
+#define PROBE_SAMPLES_COUNT 3
+
+typedef struct {
+  int s;
+  double send_time;
+  double rtt;
+  int samples_sent;
+  int samples_received;
+  short revents;				// poll() result for this probe socket, see FWD_network_update()
+} probe_t;
 
 
 typedef struct peer
@@ -158,7 +182,13 @@ typedef struct peer
 	int s;							// socket, used for connection to remote host
 	peer_state_t ps;				// peer state
 	protocol_t	proto;				// which protocol we use
+	short revents;					// poll() result for 's', see FWD_network_update()
 	struct peer *next;				// next peer in linked list
+
+	// pingprobe
+	probe_t probes[MAX_PING_PROBES];
+	int num_probes;
+	double probe_start_time;
 } peer_t;
 
 // used for passing params for thread
@@ -225,6 +255,7 @@ extern proxy_static_t ps;
 
 extern cvar_t *developer, *maxclients, *hostname;
 extern cvar_t *hostport, *countrycode, *city, *coords;
+extern cvar_t *sv_pathprobe_enable, *sv_pathprobe_count, *sv_pathprobe_delay;
 
 //
 // token.c
@@ -265,6 +296,7 @@ extern	peer_t		*peers;
 peer_t		*FWD_peer_by_addr(struct sockaddr_in *from);
 peer_t		*FWD_peer_new(const char *remote_host, int remote_port, struct sockaddr_in *from, const char *userinfo, int qport, protocol_t proto, qbool link);
 void		FWD_update_peers(void);
+void		FWD_PeerStartProbing(peer_t *p);
 
 int			FWD_peers_count(void);
 
