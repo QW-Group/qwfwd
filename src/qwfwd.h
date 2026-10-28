@@ -69,6 +69,7 @@
 #include <netdb.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <poll.h>
 #include <unistd.h>
 #include <syslog.h>
 #include <pthread.h>
@@ -77,6 +78,14 @@
 #define closesocket		close
 #define qerrno			errno
 
+#endif
+
+#ifdef _WIN32
+#define qpoll WSAPoll
+typedef WSAPOLLFD net_pollfd_t;
+#else
+#define qpoll poll
+typedef struct pollfd net_pollfd_t;
 #endif
 
 #ifndef INVALID_SOCKET
@@ -136,9 +145,24 @@ typedef enum
 typedef enum
 {
 	ps_drop,		// we should drop this peer soon
+	ps_pingprobe,	// probing source ports
 	ps_challenge,	// peer getting a challenge
+	ps_connecting,	// challenge done, waiting for connection ack
 	ps_connected	// peer fully connected
 } peer_state_t;
+
+
+#define MAX_PING_PROBES 64
+#define PROBE_SAMPLES_COUNT 3
+
+typedef struct {
+  int s;
+  double send_time;
+  double rtt;
+  int samples_sent;
+  int samples_received;
+  short revents;				// poll() result for this probe socket, see FWD_network_update()
+} probe_t;
 
 
 typedef struct peer
@@ -158,7 +182,29 @@ typedef struct peer
 	int s;							// socket, used for connection to remote host
 	peer_state_t ps;				// peer state
 	protocol_t	proto;				// which protocol we use
+	short revents;					// poll() result for 's', see FWD_network_update()
 	struct peer *next;				// next peer in linked list
+
+	// pingprobe
+	probe_t probes[MAX_PING_PROBES];
+	int num_probes;
+	double probe_start_time;
+
+	// multipath: runner-up probe socket kept as hot standby, see FWD_mp_tick()
+	int alt_s;						// INVALID_SOCKET if none
+	short alt_revents;				// poll() result for alt_s
+	double mp_ping_at;				// last health ping
+	double mp_rtt[2];				// EWMA rtt ms: [0] = s, [1] = alt_s
+	int mp_miss[2];					// consecutive unanswered health pings
+	qbool mp_acked[2];
+	int mp_wins;					// consecutive ticks alt_s beat s
+	double mp_switch_at;			// last switch, for cooldown
+	double mp_rx_at;				// last packet from remote on s
+	double mp_tx_at;				// last client packet forwarded to remote
+	int mp_rx_count;				// packets from remote on s since last tick
+	int mp_rx_rate;					// ... in the previous 1s tick (pps)
+	double mp_verify_at;			// silence seen, verify pings sent at; 0 = idle
+	qbool mp_vack;					// alt_s answered the verify ping
 } peer_t;
 
 // used for passing params for thread
@@ -225,6 +271,8 @@ extern proxy_static_t ps;
 
 extern cvar_t *developer, *maxclients, *hostname;
 extern cvar_t *hostport, *countrycode, *city, *coords;
+extern cvar_t *sv_pathprobe_enable, *sv_pathprobe_count, *sv_pathprobe_delay;
+extern cvar_t *multipath_enable, *multipath_switch_ms, *multipath_notify;
 
 //
 // token.c
@@ -265,6 +313,8 @@ extern	peer_t		*peers;
 peer_t		*FWD_peer_by_addr(struct sockaddr_in *from);
 peer_t		*FWD_peer_new(const char *remote_host, int remote_port, struct sockaddr_in *from, const char *userinfo, int qport, protocol_t proto, qbool link);
 void		FWD_update_peers(void);
+void		FWD_PeerStartProbing(peer_t *p);
+void		FWD_mp_close_alt(peer_t *p);
 
 int			FWD_peers_count(void);
 
@@ -441,6 +491,46 @@ void				QRY_SV_PingReply();
 qbool				QRY_IsMasterReply(void);
 void				SVC_QRY_ParseMasterReply(void);
 void				SVC_QRY_PingStatus(void);
+
+//
+// mesh (query.c) - P2P discovery between qwfwd instances
+//
+
+// wire marker for mesh replies: 0xFF 0xFF 0xFF 0xFF 'Q' 'M' <type> <nonce:4>
+// distinct from A2C_PRINT ('n') so it can never collide with any existing
+// out-of-band text reply (status errors, master replies, plain pingstatus
+// text query, etc). 'Q','M' = "Query Mesh".
+#define MESH_MAGIC0 'Q'
+#define MESH_MAGIC1 'M'
+
+#define MESH_MSG_PINGSTATUS_REPLY	1	// reply to our own "pingstatus" probe
+#define MESH_MSG_MESHSTATUS_REPLY	2	// reply to "meshstatus" collector query
+
+// hard cap on hop2 entries kept per mesh peer - bounds memory AND must fit
+// a single peer block inside one unfragmented UDP datagram (MAX_MSGLEN).
+// Each entry is 12 bytes (ip+port+ping+jitter+loss_pct); a peer block also
+// carries a 10-byte sub-header. 100 * 12 + 10 = 1210 bytes, safely under
+// MAX_MSGLEN (1450) with headroom for the mesh reply's own 11-byte OOB
+// header - unlike the previous value (128), which could produce a block
+// (128*12+10=1546) that never fits and would stall meshstatus pagination
+// against a legitimately (or maliciously) large hop2 set.
+#define MESH_MAX_HOP2_PER_PEER 100
+
+// one measured edge: <peer> -> <addr> costs <ping> ms avg, as reported by
+// <peer>, with quality stats accumulated over that peer's own natural ping
+// cadence (see PING_QUALITY_WINDOW in query.c) - not a single sample
+typedef struct hop2_entry_s
+{
+	struct sockaddr_in	addr;		// target address (not the peer itself)
+	int					ping;		// average ping in ms, as reported by the peer
+	int					jitter;		// stddev of ping in ms
+	int					loss_pct;	// packet loss percent (0-100)
+} hop2_entry_t;
+
+qbool				QRY_Mesh_IsMeshReply(void);
+void				QRY_Mesh_HandleReply(void);
+void				SVC_QRY_MeshProbe(void);
+void				SVC_QRY_MeshStatus(void);
 
 //
 // huff.c
