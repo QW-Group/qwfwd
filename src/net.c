@@ -162,6 +162,12 @@ qbool NET_GetSockAddrIn_ByHostAndPort(struct sockaddr_in *address, const char *h
 	return true;
 }
 
+qbool NET_ParseIPv4(const char *host, struct in_addr *address)
+{
+	address->s_addr = inet_addr(host);
+	return address->s_addr != INADDR_NONE || !strcmp(host, "255.255.255.255");
+}
+
 //=============================================================================
 // return true if adresses equal
 qbool NET_CompareAddress(struct sockaddr_in *a, struct sockaddr_in *b)

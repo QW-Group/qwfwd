@@ -79,4 +79,6 @@ jobs:
              cp build/${{ matrix.target }}/qwfwd.md5 upload/snapshots/${{ matrix.os }}/${{ matrix.arch }}/${{ env.DATE }}_${GITHUB_SHA::7}_qwfwd.md5
              cp build/${{ matrix.target }}/qwfwd${{ matrix.ext }} upload/snapshots/latest/${{ matrix.os }}/${{ matrix.arch }}/qwfwd${{ matrix.ext }}
              cp build/${{ matrix.target }}/qwfwd.md5 upload/snapshots/latest/${{ matrix.os }}/${{ matrix.arch }}/qwfwd.md5
+             cp build/${{ matrix.target }}/c-ares-LICENSE.md upload/snapshots/${{ matrix.os }}/${{ matrix.arch }}/c-ares-LICENSE.md
+             cp build/${{ matrix.target }}/c-ares-LICENSE.md upload/snapshots/latest/${{ matrix.os }}/${{ matrix.arch }}/c-ares-LICENSE.md
              sftp -rp -o 'StrictHostKeyChecking no' -o 'UserKnownHostsFile /dev/null' -P ${{ secrets.SFTP_PORT }} ${{ secrets.SFTP_USERNAME }}@${{ secrets.SFTP_HOST }}:/snapshots <<< $'put -rp upload/snapshots/*'

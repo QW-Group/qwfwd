@@ -144,6 +144,17 @@ static qbool CL_ConnectionlessPacket_Q3 (peer_t *p)
 		Sys_DPrintf ("CL packet %s: %s\n", NET_AdrToString(&net_from, buf, sizeof(buf)), s);
 	}
 
+	if (!stricmp(c, "disconnect"))
+	{
+		// Retire the old peer without interrupting the pending route change.
+		p->ps = ps_drop;
+		SVC_CancelConnectForRoute(p);
+		return !p->connect_pending;
+	}
+
+	if (p->connect_pending)
+		return false;
+
 	// challenge from the server we are connecting to
 	if ( !stricmp(c, "challengeResponse") )
 	{
@@ -194,15 +205,6 @@ static qbool CL_ConnectionlessPacket_Q3 (peer_t *p)
 		return need_forward;
 	}
 
-	// a disconnect message from the server, which will happen if the server
-	// dropped the connection but it is still getting packets from us
-	if ( !stricmp(c, "disconnect") )
-	{
-//		CL_DisconnectPacket( from );
-		p->ps = ps_drop; // drop this peer
-		return need_forward = true; // so client have chance to see what server trying to say
-	}
-
 	// echo request from server
 	if ( !stricmp(c, "print") )
 	{
@@ -218,7 +220,7 @@ qbool CL_ConnectionlessPacket (peer_t *p)
 {
 	if ( p->proto == pr_qw )
 	{
-		return CL_ConnectionlessPacket_QW( p );
+		return !p->connect_pending && CL_ConnectionlessPacket_QW( p );
 	}
 	else
 	{
