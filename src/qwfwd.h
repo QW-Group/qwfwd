@@ -391,7 +391,6 @@ extern	sizebuf_t		net_message;
 int				NET_GetPacket(int s, sizebuf_t *msg);
 void				NET_SendPacket(int s, int length, const void *data, struct sockaddr_in *to);
 int				NET_UDP_OpenSocket(const char *ip, int port, qbool do_bind);
-qbool				NET_GetSockAddrIn_ByHostAndPort(struct sockaddr_in *address, const char *host, int port);
 qbool				NET_ParseIPv4(const char *host, struct in_addr *address);
 
 char				*NET_BaseAdrToString (struct sockaddr_in *a, char *buf, size_t bufsize);
@@ -453,6 +452,9 @@ void				Info_SetValueForKeyEx (char *s, const char *key, const char *value, unsi
 //
 // query.c
 //
+
+#define MAX_MASTERS 8
+#define MAX_SV_FILTERS 16
 
 void				QRY_Init(void);
 void				QRY_Frame(void);

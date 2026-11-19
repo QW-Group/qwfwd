@@ -130,38 +130,6 @@ int NET_UDP_OpenSocket(const char *ip, int port, qbool do_bind)
 
 //=============================================================================
 
-qbool NET_GetSockAddrIn_ByHostAndPort(struct sockaddr_in *address, const char *host, int port)
-{
-	struct hostent *phe;
-	struct sockaddr_in sin;
-
-	memset(address, 0, sizeof(*address));
-
-	memset(&sin, 0, sizeof(sin));
-	sin.sin_family = AF_INET;
-
-//	if((sin.sin_port = htons((u_short)port)) == 0)
-//	{
-//		Sys_Printf("NET_GetSockAddrIn_ByHostAndPort: wrong port: %d\n", port);
-//		return false;
-//	}
-	sin.sin_port = htons((u_short)port);
-
-	/* Map host name to IP address, allowing for dotted decimal */
-	if((phe = gethostbyname(host)))
-	{
-		memcpy((char *)&sin.sin_addr, phe->h_addr, phe->h_length);
-	}
-	else if((sin.sin_addr.s_addr = inet_addr(host)) == INADDR_NONE)
-	{
-		Sys_Printf("NET_GetSockAddrIn_ByHostAndPort: wrong host: %s\n", host);
-		return false;
-	}
-
-	*address = sin;
-	return true;
-}
-
 qbool NET_ParseIPv4(const char *host, struct in_addr *address)
 {
 	address->s_addr = inet_addr(host);

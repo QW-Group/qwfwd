@@ -19,11 +19,8 @@
 #define QW_DEFAULT_MASTER_SERVERS "master.quake.world master.quakeservers.net"
 #define QW_DEFAULT_MASTER_SERVER_PORT 27000
 
-#define MAX_MASTERS 8 // size for masters fixed size array, I am lazy
-
 #define MAX_SERVERS 512 // we will not add more than that servers to our list, just for some sanity
 
-#define MAX_SV_FILTERS 16 // how much servers we can filter with masters_filter_servers, can be increased widely.
 #define QW_DEFAULT_SV_FILTER "127.0.0.1" // some masters provide unusable servers, filter them.
 
 static cvar_t *masters_query;
@@ -43,6 +40,7 @@ typedef struct master
 {
 	master_state_t			state;		// master state
 	time_t					next_query;	// next time when query master server
+	time_t					next_heartbeat;
 	struct sockaddr_in		addr;		// master addr
 } master_t;
 
@@ -51,7 +49,6 @@ typedef struct masters
 {
 	time_t					init_time;				// this is used to periodical re-init initiation
 
-	time_t					last_heartbeat;			// when we send heartbeat last time
 	int						heartbeat_sequence;		// heartbeat sequence number
 
 	master_t				master[MAX_MASTERS];	// masters fixed size array, I am lazy
@@ -72,18 +69,137 @@ typedef struct server
 	struct server			*next;			// next server in linked list
 } server_t;
 
-// single server_filter struct.
-// used by masters_filter_servers.
-typedef struct server_filter
-{
-	struct sockaddr_in		addr[MAX_SV_FILTERS];			// addr[]
-	int						count;
-} server_filter_t;
-
 static int sv_count;
 static server_t *servers;
-static server_filter_t server_filter;
 static masters_t masters;
+
+typedef struct
+{
+	cvar_t *source;
+	char *next;
+	unsigned int generation;
+	int count;
+	int pending;
+	int outstanding; // Includes requests from earlier configurations.
+} qry_lookup_t;
+
+typedef qbool (*qry_add_address_t)(const char *name, struct sockaddr_in *addr);
+
+typedef struct
+{
+	qry_lookup_t *list;
+	unsigned int generation;
+	qry_add_address_t add;
+	unsigned short port;
+	char name[];
+} qry_request_t;
+
+static qry_lookup_t master_lookup, filter_lookup;
+static struct sockaddr_in server_filters[MAX_SV_FILTERS];
+static qbool filters_reloading;
+
+static void QRY_ResetLookup(qry_lookup_t *list)
+{
+	list->next = list->source->string;
+	list->generation++;
+	list->count = list->pending = 0;
+}
+
+static void QRY_LookupReply(const struct in_addr *address, void *arg)
+{
+	qry_request_t *request = arg;
+	qry_lookup_t *list = request->list;
+
+	list->outstanding--;
+
+	// Commands can change the cvar before QRY_Frame observes the change.
+	if (!ps.wanttoexit && list->generation == request->generation && !list->source->modified &&
+		(list != &master_lookup || !masters_query->modified))
+	{
+		list->pending--;
+		if (address)
+		{
+			struct sockaddr_in addr = {0};
+			addr.sin_family = AF_INET;
+			addr.sin_addr = *address;
+			addr.sin_port = request->port;
+			if (request->add(request->name, &addr))
+				list->count++;
+		}
+		else
+		{
+			Sys_Printf("%s: could not resolve %s\n", list->source->name, request->name);
+		}
+	}
+
+	Sys_free(request);
+}
+
+static void QRY_LookupNames(qry_lookup_t *list, int limit, int default_port, qry_add_address_t add)
+{
+	while (list->next && list->count + list->pending < limit)
+	{
+		struct sockaddr_in addr = {0};
+		qry_request_t *request;
+		char host[1024], *colon;
+		char *next = COM_Parse(list->next);
+		int port = 0;
+
+		if (!next)
+		{
+			list->next = NULL;
+			return;
+		}
+
+		strlcpy(host, com_token, sizeof(host));
+		colon = strchr(host, ':');
+		if (colon)
+		{
+			*colon = 0;
+			if (default_port)
+				port = atoi(colon + 1);
+		}
+		addr.sin_family = AF_INET;
+		addr.sin_port = htons((unsigned short)((port > 0 && port < 65535) ? port : default_port));
+
+		if (!host[0])
+		{
+			Sys_Printf("%s: empty hostname in %s\n", list->source->name, com_token);
+		}
+		else if (NET_ParseIPv4(host, &addr.sin_addr))
+		{
+			if (add(com_token, &addr))
+				list->count++;
+		}
+		else
+		{
+			if (list->outstanding == limit)
+				return;
+
+			request = Sys_malloc(sizeof(*request) + strlen(com_token) + 1);
+			request->list = list;
+			request->generation = list->generation;
+			request->add = add;
+			request->port = addr.sin_port;
+			strcpy(request->name, com_token);
+			if (!NET_DNS_Resolve(host, QRY_LookupReply, request))
+			{
+				Sys_free(request);
+				return; // The shared resolver is full. Retry this name on the next frame.
+			}
+			list->pending++;
+			list->outstanding++;
+		}
+		list->next = next;
+	}
+
+	if (list->count == limit)
+	{
+		if (list->next && COM_Parse(list->next))
+			Sys_Printf("%s: limit of %d addresses reached\n", list->source->name, limit);
+		list->next = NULL;
+	}
+}
 
 static master_t	*QRY_Master_ByAddr(struct sockaddr_in *addr)
 {
@@ -102,36 +218,12 @@ static master_t	*QRY_Master_ByAddr(struct sockaddr_in *addr)
 	return NULL;
 }
 
-static qbool QRY_AddMaster(const char *master)
+static qbool QRY_AddMaster(const char *master, struct sockaddr_in *addr)
 {
-	int						i, port;
-	master_t				*m;
-	struct sockaddr_in		addr;
-	char					host[1024], *column;
+	int i;
+	master_t *m;
 
-	// decide host:port, port is optional and DEFAULT_MASTER_SERVER_PORT is used if ommited
-	port = 0;
-	strlcpy(host, master, sizeof(host));
-	if ((column = strchr(host, ':')))
-	{
-		column[0] = 0; // truncate host name
-		port = atoi(column + 1); // get port for real
-	}
-	port = (port > 0 && port < 65535) ? port : QW_DEFAULT_MASTER_SERVER_PORT;
-
-	if (!host[0])
-	{
-		Sys_Printf("failed to add master server: %s\n", master);
-		return false; // empty host name, not funny
-	}
-
-	if (!NET_GetSockAddrIn_ByHostAndPort(&addr, host, port))
-	{
-		Sys_Printf("failed to add master server: %s\n", master);
-		return false;
-	}
-
-	if (QRY_Master_ByAddr(&addr))
+	if (QRY_Master_ByAddr(addr))
 	{
 		Sys_Printf("failed to add master server: %s - already added!\n", master);
 		return false;
@@ -145,7 +237,7 @@ static qbool QRY_AddMaster(const char *master)
 		memset(m, 0, sizeof(*m)); // reset data in slot
 
 		m->state = ms_used;
-		m->addr = addr;
+		m->addr = *addr;
 
 		Sys_Printf("master server added: %s\n", master);
 		return true;
@@ -157,7 +249,10 @@ static qbool QRY_AddMaster(const char *master)
 
 static void QRY_Cmd_Heartbeat_f(void)
 {
-	masters.last_heartbeat = time(NULL) - QW_MASTER_HEARTBEAT_SECONDS - 1; // trigger heartbeat ASAP
+	int i;
+
+	for (i = 0; i < MAX_MASTERS; i++)
+		masters.master[i].next_heartbeat = 0;
 }
 
 // clear masters
@@ -165,15 +260,10 @@ static void QRY_MastersInit(void)
 {
 	memset(&masters, 0, sizeof(masters));
 	masters.init_time = time(NULL);
-
-	QRY_Cmd_Heartbeat_f();  // trigger heartbeat ASAP
 }
 
-// check if "masters" or "masters_query" cvar changed and do appropriate action
-static void QRY_CheckMastersModified(void)
+static void QRY_UpdateMasters(void)
 {
-	char *mlist;
-
 	// for fix issues with DNS and such force masters re-init time to time
 	if (time(NULL) - masters.init_time > QW_MASTERS_FORCE_RE_INIT)
 	{
@@ -181,20 +271,14 @@ static void QRY_CheckMastersModified(void)
 		masters_list->modified = true;
 	}
 
-	// "masters" and "masters_query" was not modified, do nothing
-	if (!masters_list->modified && !masters_query->modified)
-		return;
-
-	// clear masters
-	QRY_MastersInit();
-
-	// add all masters
-	for ( mlist = masters_list->string; (mlist = COM_Parse(mlist)); )
+	if (masters_list->modified || masters_query->modified)
 	{
-		QRY_AddMaster(com_token);
+		QRY_MastersInit();
+		QRY_ResetLookup(&master_lookup);
+		masters_list->modified = masters_query->modified = false;
 	}
 
-	masters_list->modified = masters_query->modified = false;
+	QRY_LookupNames(&master_lookup, MAX_MASTERS, QW_DEFAULT_MASTER_SERVER_PORT, QRY_AddMaster);
 }
 
 // query master servers
@@ -205,8 +289,8 @@ static void QRY_QueryMasters(void)
 	time_t		current_time = time(NULL);
 	char		buf[] = "xxx.xxx.xxx.xxx:xxxxx";
 
-	// do we need query masters?
-	if (!masters_query->integer)
+	// Query only after the current filter list has finished resolving.
+	if (!masters_query->integer || filters_reloading)
 		return;
 
 	for (i = 0, m = masters.master; i < MAX_MASTERS; i++, m++)
@@ -229,7 +313,7 @@ static void QRY_QueryMasters(void)
 static void QRY_HeartbeatMasters(void)
 {
 	char		string[128];
-	int			i, len;
+	int			i, len = 0;
 	master_t	*m;
 	time_t		current_time = time(NULL);
 	char		buf[] = "xxx.xxx.xxx.xxx:xxxxx";
@@ -238,24 +322,23 @@ static void QRY_HeartbeatMasters(void)
 	if (!masters_heartbeat->integer)
 		return;
 
-	if (current_time < masters.last_heartbeat + QW_MASTER_HEARTBEAT_SECONDS)
-		return; // not yet
-	
-	masters.last_heartbeat = current_time;
-	masters.heartbeat_sequence++;
-	snprintf(string, sizeof(string), "%c\n%i\n%i\n", S2M_HEARTBEAT, masters.heartbeat_sequence, FWD_peers_count());
-	len = strlen(string);
-
-	if (developer->integer > 1)
-		Sys_DPrintf("heartbeat:\n%s\n", string);
-
 	for (i = 0, m = masters.master; i < MAX_MASTERS; i++, m++)
 	{
-		if (m->state != ms_used)
-			continue; // master slot not used
-		
+		if (m->state != ms_used || current_time < m->next_heartbeat)
+			continue;
+
+		if (!len)
+		{
+			masters.heartbeat_sequence++;
+			snprintf(string, sizeof(string), "%c\n%i\n%i\n", S2M_HEARTBEAT, masters.heartbeat_sequence, FWD_peers_count());
+			len = strlen(string);
+			if (developer->integer > 1)
+				Sys_DPrintf("heartbeat:\n%s\n", string);
+		}
+
 		Sys_DPrintf("heartbeat master: %s\n", NET_AdrToString(&m->addr, buf, sizeof(buf)));
 		NET_SendPacket(net_socket, len, string, &m->addr);
+		m->next_heartbeat = current_time + QW_MASTER_HEARTBEAT_SECONDS;
 	}
 }
 
@@ -267,7 +350,7 @@ qbool QRY_IsMasterReply(void)
 	return true;
 }
 
-static server_t	*QRY_SV_new(const char *remote_host, int remote_port, qbool link); // forward reference
+static void QRY_SV_Add(struct sockaddr_in *addr);
 
 void SVC_QRY_ParseMasterReply(void)
 {
@@ -276,8 +359,8 @@ void SVC_QRY_ParseMasterReply(void)
 	int				ret = net_message.cursize;
 	unsigned char	*answer = net_message.data; // not the smartest way, but why copy from one place to another...
 
-	// no point to parse it, we do not query masters
-	if (!masters_query->integer)
+	// A config change can arrive before QRY_Frame starts reloading filters.
+	if (!masters_query->integer || filters_reloading || masters_filter_servers->modified)
 	{
 		Sys_DPrintf("master server reply ignored\n");
 		return;
@@ -309,23 +392,24 @@ void SVC_QRY_ParseMasterReply(void)
 
 	for (c = 0, i = 6; i + 5 < ret; i += 6, c++)
 	{
-		char ip[64];
-		int port = 256 * (int)answer[i+4] + (int)answer[i+5];
-
-		snprintf(ip, sizeof(ip), "%u.%u.%u.%u",
-			(int)answer[i+0], (int)answer[i+1],
-			(int)answer[i+2], (int)answer[i+3]);
+		struct sockaddr_in addr = {0};
+		addr.sin_family = AF_INET;
+		memcpy(&addr.sin_addr, answer + i, sizeof(addr.sin_addr));
+		memcpy(&addr.sin_port, answer + i + 4, sizeof(addr.sin_port));
 
 		if (developer->integer > 1)
-			Sys_DPrintf("SERVER: %4d %s:%d\n", c, ip, port);
+		{
+			char buf[] = "xxx.xxx.xxx.xxx:xxxxx";
+			Sys_DPrintf("SERVER: %4d %s\n", c, NET_AdrToString(&addr, buf, sizeof(buf)));
+		}
 
-		QRY_SV_new(ip, port, true);
+		QRY_SV_Add(&addr);
 	}
 }
 
 //========================================
 
-static struct sockaddr_in *QRY_FL_Filtered(struct sockaddr_in *addr); // forward reference
+static qbool QRY_FL_Filtered(struct sockaddr_in *addr); // forward reference
 
 static int QRY_SV_Count(void)
 {
@@ -347,60 +431,42 @@ static server_t	*QRY_SV_ByIndex(int idx)
 	return NULL;
 }
 
-static server_t	*QRY_SV_ByAddrEx(struct sockaddr_in *addr, qbool base)
+static server_t *QRY_SV_ByAddr(struct sockaddr_in *addr)
 {
-	// use different compare function.
-	typedef		qbool (*net_cmp_func)(struct sockaddr_in *a, struct sockaddr_in *b);
-	net_cmp_func cmp_func = base ? NET_CompareBaseAddress : NET_CompareAddress;
-
 	server_t	*sv;
 
 	for (sv = servers; sv; sv = sv->next)
-		if ((*cmp_func)(addr, &sv->addr))
+		if (NET_CompareAddress(addr, &sv->addr))
 			return sv;
 
 	return NULL;
 }
 
-static server_t	*QRY_SV_ByAddr(struct sockaddr_in *addr)
-{
-	return QRY_SV_ByAddrEx(addr, false);
-}
-
-static server_t	*QRY_SV_new(const char *remote_host, int remote_port, qbool link)
+static void QRY_SV_Add(struct sockaddr_in *addr)
 {
 	server_t			*sv;
-	struct sockaddr_in	addr;
 
 	if (QRY_SV_Count() >= MAX_SERVERS)
-		return NULL;
+		return;
 
-	if (!NET_GetSockAddrIn_ByHostAndPort(&addr, remote_host, remote_port))
-		return NULL; // failed to resolve host name?
+	if (QRY_SV_ByAddr(addr))
+		return; // we already have such server on list
 
-	if ((sv = QRY_SV_ByAddr(&addr)))
-		return NULL; // we already have such server on list
-
-	if (QRY_FL_Filtered(&addr))
+	if (QRY_FL_Filtered(addr))
 	{
 		char buf[] = "xxx.xxx.xxx.xxx:xxxxx";
-		Sys_DPrintf("filtered: %s\n", NET_AdrToString(&addr, buf, sizeof(buf)));
-		return NULL; // filtered
+		Sys_DPrintf("filtered: %s\n", NET_AdrToString(addr, buf, sizeof(buf)));
+		return;
 	}
 
 	sv_count++;
 
 	sv = Sys_malloc(sizeof(*sv));
-	sv->addr = addr;
+	sv->addr = *addr;
 	sv->ping = 0xFFFF; // mark as unreachable
 
-	if (link)
-	{
-		sv->next = servers;
-		servers = sv;
-	}
-
-	return sv;
+	sv->next = servers;
+	servers = sv;
 }
 
 // free server data, perform unlink if requested
@@ -556,75 +622,25 @@ void SVC_QRY_PingStatus(void)
 // server filters.
 // _FL_ stands for filter.
 
-static void QRY_FL_Init(void)
+static qbool QRY_FL_Filtered(struct sockaddr_in *addr)
 {
-	memset(&server_filter, 0, sizeof(server_filter));
+	int i;
+
+	for (i = 0; i < filter_lookup.count; i++)
+		if (NET_CompareBaseAddress(addr, &server_filters[i]))
+			return true;
+
+	return false;
 }
 
-static struct sockaddr_in *QRY_FL_Filtered(struct sockaddr_in *addr)
+static void QRY_FL_RemoveServers(struct sockaddr_in *addr)
 {
-	int						i;
+	server_t *sv, *next;
 
-	for (i = 0; i < server_filter.count; i++)
+	for (sv = servers; sv; sv = next)
 	{
-		if (NET_CompareBaseAddress(addr, &server_filter.addr[i]))
-			return &server_filter.addr[i];
-	}
-
-	return NULL;
-}
-
-static qbool QRY_FL_AddFilter(const char *filter)
-{
-	struct sockaddr_in		addr;
-	char					host[1024], *column;
-
-	if (server_filter.count >= MAX_SV_FILTERS)
-	{
-		Sys_Printf("failed to add server filter: %s - filter list are full!\n", filter);
-		return false;
-	}
-
-	// get host name.
-	strlcpy(host, filter, sizeof(host));
-	if ((column = strchr(host, ':')))
-	{
-		column[0] = 0; // get rid of port.
-	}
-
-	if (!host[0])
-	{
-		Sys_Printf("failed to add server filter: %s\n", filter);
-		return false; // empty host name, not funny
-	}
-
-	if (!NET_GetSockAddrIn_ByHostAndPort(&addr, host, 0))
-	{
-		Sys_Printf("failed to add server filter: %s\n", filter);
-		return false;
-	}
-
-	if (QRY_FL_Filtered(&addr))
-	{
-		Sys_Printf("failed to add server filter: %s - already added!\n", filter);
-		return false;
-	}
-
-	server_filter.addr[server_filter.count] = addr;
-	server_filter.count++;
-
-	Sys_Printf("server filter added: %s\n", filter);
-	return true;
-}
-
-static void QRY_FL_RemoveFilteredServers(void)
-{
-	int			i;
-	server_t	*sv;
-
-	for (i = 0; i < server_filter.count; i++)
-	{
-		if ((sv = QRY_SV_ByAddrEx(&server_filter.addr[i], true)))
+		next = sv->next;
+		if (NET_CompareBaseAddress(addr, &sv->addr))
 		{
 			char buf[] = "xxx.xxx.xxx.xxx:xxxxx";
 			Sys_DPrintf("filtered: %s\n", NET_AdrToString(&sv->addr, buf, sizeof(buf)));
@@ -633,28 +649,35 @@ static void QRY_FL_RemoveFilteredServers(void)
 	}
 }
 
-// check if "masters_filter_servers" cvar changed and do appropriate action
-static void QRY_FL_CheckVarsModified(void)
+static qbool QRY_FL_AddFilter(const char *filter, struct sockaddr_in *addr)
 {
-	char *mlist;
-
-	// "masters_filter_servers" was not modified, do nothing
-	if (!masters_filter_servers->modified)
-		return;
-
-	// clear filters
-	QRY_FL_Init();
-
-	// add all filters
-	for ( mlist = masters_filter_servers->string; (mlist = COM_Parse(mlist)); )
+	if (QRY_FL_Filtered(addr))
 	{
-		QRY_FL_AddFilter(com_token);
+		Sys_Printf("failed to add server filter: %s - already added!\n", filter);
+		return false;
 	}
 
-	// remove filtered servers if any.
-	QRY_FL_RemoveFilteredServers();
+	server_filters[filter_lookup.count] = *addr;
+	QRY_FL_RemoveServers(addr);
+	Sys_Printf("server filter added: %s\n", filter);
+	return true;
+}
 
-	masters_filter_servers->modified = false;
+// check if "masters_filter_servers" cvar changed and do appropriate action
+static void QRY_FL_Update(void)
+{
+	if (masters_filter_servers->modified)
+	{
+		QRY_ResetLookup(&filter_lookup);
+		masters_filter_servers->modified = false;
+		filters_reloading = true;
+	}
+
+	if (!filters_reloading)
+		return;
+
+	QRY_LookupNames(&filter_lookup, MAX_SV_FILTERS, 0, QRY_FL_AddFilter);
+	filters_reloading = filter_lookup.next || filter_lookup.pending;
 }
 
 //==============================================
@@ -683,8 +706,8 @@ static void QRY_Cmd_SvList_f(void)
 
 void QRY_Frame(void)
 {
-	QRY_FL_CheckVarsModified();		// check if "masters_filter_servers" variable changed
-	QRY_CheckMastersModified();		// check is "masters" variable changed
+	QRY_FL_Update();					// update server filters
+	QRY_UpdateMasters();			// update master servers
 	QRY_QueryMasters();				// request time to time server list from masters
 	QRY_HeartbeatMasters();			// send heartbeat to masters time to time
 	QRY_SV_PingServers();			// ping time to time normal qw servers
@@ -699,11 +722,12 @@ void QRY_Init(void)
 	masters_list		= Cvar_Get("masters",			QW_DEFAULT_MASTER_SERVERS, 0);
 	masters_filter_servers = Cvar_Get("masters_filter_servers",	QW_DEFAULT_SV_FILTER, 0);
 
+	master_lookup.source = masters_list;
+	filter_lookup.source = masters_filter_servers;
+
 	Cmd_AddCommand("svlist", QRY_Cmd_SvList_f);
 	Cmd_AddCommand("heartbeat", QRY_Cmd_Heartbeat_f);
 
-	// clear filters
-	QRY_FL_Init();
 	// clear masters
 	QRY_MastersInit();
 }

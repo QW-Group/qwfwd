@@ -3,7 +3,7 @@
 #include <ares.h>
 #include <stdatomic.h>
 
-#define MAX_DNS_REQUESTS MAX_PRX_DNS_REQUESTS
+#define MAX_DNS_REQUESTS (MAX_PRX_DNS_REQUESTS + MAX_MASTERS + MAX_SV_FILTERS)
 #define DNS_PENDING (-1)
 
 typedef struct
