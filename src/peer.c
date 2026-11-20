@@ -128,6 +128,10 @@ static void FWD_mp_pick_relay(peer_t *p, double now)
 	Info_ValueForKey(p->userinfo, QWFWD_PRX_KEY, b, sizeof(b));
 	if (b[0])
 		return;
+	// player asked for no backup (0) or same-proxy only (1)
+	Info_ValueForKey(p->userinfo, "multipath", b, sizeof(b));
+	if (b[0] && atoi(b) < 2)
+		return;
 
 	// already on/with a relay, or on the backup: leave it alone
 	if (!NET_CompareAddress(&p->to, &p->srv) ||
@@ -669,7 +673,11 @@ static void FWD_CheckProbeCompletion(peer_t *p) {
   // Multipath: keep the runner-up as hot standby. Not when the next hop is
   // another qwfwd: it matches peers by full ip:port, not qport, so a switch
   // would orphan us there.
-  if (best_idx != -1 && multipath_enable->integer) {
+  // Player choice via userinfo (no client change, plain setinfo):
+  // "multipath 0" = no backup, "multipath 1" = same-proxy port only, unset/2 = mesh too.
+  char mp_mode[16];
+  Info_ValueForKey(p->userinfo, "multipath", mp_mode, sizeof(mp_mode));
+  if (best_idx != -1 && multipath_enable->integer && (!mp_mode[0] || atoi(mp_mode))) {
     char next_hop[MAX_INFO_STRING];
     int alt_idx = -1;
     double alt_rtt = 99999.0;
@@ -686,7 +694,7 @@ static void FWD_CheckProbeCompletion(peer_t *p) {
     p->alt_to = p->to;
     p->mp_lost[0] = p->mp_lost[1] = 0;
     p->mp_data_at = p->mp_relay_at = 0;
-    p->mp_no_relay = !!next_hop[0];
+    p->mp_no_relay = next_hop[0] || atoi(mp_mode) == 1;
     p->mp_rtt[0] = best_rtt * 1000.0;
     p->mp_rtt[1] = alt_rtt * 1000.0;
     p->mp_ping_at = p->mp_switch_at = p->mp_rx_at = p->mp_tx_at = 0;

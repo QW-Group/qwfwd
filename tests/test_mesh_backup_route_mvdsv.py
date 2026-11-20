@@ -9,6 +9,8 @@ the client must keep receiving the game through B without reconnecting.
 Linux, root. Env: QWFWD_EXE, MVDSV_DIR (dir with ./mvdsv, id1/pak0.pak, ktx/qwprogs.so).
 NO_MIGRATE=1 runs mvdsv with an empty sv_proxy_migrate: expect a switch, then
 "multipath switch (rollback)" in A's log and the remaining checks to fail.
+MP_MODE=0|1 connects with "setinfo multipath N" (no backup / same-proxy
+only): expect the player to spawn and no mesh backup to be chosen.
 """
 import os
 import re
@@ -42,6 +44,8 @@ def main():
     print("waiting for mesh discovery...")
     # EARLY=1: connect before the mesh settled, the backup must be picked mid game
     early = bool(os.environ.get("EARLY"))
+    mp_mode = os.environ.get("MP_MODE")
+    mp_info = "\\multipath\\%s" % mp_mode if mp_mode is not None else ""
     time.sleep(3 if early else 25)
     kill_after = 30 if early else 6
 
@@ -53,7 +57,7 @@ def main():
     c.settimeout(2)
     c.sendto(OOB + b"getchallenge\n", a)
     chal = c.recvfrom(2048)[0][5:].split(b"\x00")[0].split()[0].decode()
-    c.sendto(OOB + ('connect 28 %d %s "\\name\\migtest\\prx\\%s:%d"\n' % (QPORT, chal, t.IP_S, PORT_S)).encode(), a)
+    c.sendto(OOB + ('connect 28 %d %s "\\name\\migtest%s\\prx\\%s:%d"\n' % (QPORT, chal, mp_info, t.IP_S, PORT_S)).encode(), a)
     while True:  # wait for 'j' (accept), skipping prints
         d = c.recvfrom(4096)[0]
         if d.startswith(OOB + b"j"):
@@ -121,6 +125,11 @@ def main():
     for p in procs:
         p.terminate()
         outs.append(p.communicate(timeout=5)[0])
+
+    if mp_mode is not None:
+        ok = began is not None and "backup route via mesh" not in outs[0]
+        print("[%s] MP_MODE=%s: spawned, no mesh backup" % ("PASS" if ok else "FAIL", mp_mode))
+        sys.exit(0 if ok else 1)
 
     ok = True
     if not killed_at:
