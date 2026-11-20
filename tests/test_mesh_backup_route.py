@@ -118,7 +118,7 @@ def main():
         threading.Thread(target=f, daemon=True).start()
     procs = [start_qwfwd(IP_A, PORT_A), start_qwfwd(IP_B, PORT_B)]
     print("waiting for mesh discovery...")
-    time.sleep(15)
+    time.sleep(25)
 
     c = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     c.bind((IP_S, 0))
