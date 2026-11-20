@@ -110,6 +110,46 @@ static int FWD_mp_bits(unsigned int v)
 	return n;
 }
 
+// Prefer a mesh qwfwd as backup: a different machine and network, so it
+// survives what kills our own route. Retried every 5 s while we have none,
+// since the mesh may still be settling when the player connects.
+static void FWD_mp_pick_relay(peer_t *p, double now)
+{
+	struct sockaddr_in relay;
+	int cost;
+	char a[64], b[MAX_INFO_STRING];
+
+	if (p->ps != ps_connected || p->relay || p->mp_no_relay || p->proto != pr_qw ||
+		!multipath_enable->integer || now - p->mp_relay_at < 5.0)
+		return;
+	p->mp_relay_at = now;
+
+	// next hop is another qwfwd: it matches peers by ip:port, a relay would orphan us there
+	Info_ValueForKey(p->userinfo, QWFWD_PRX_KEY, b, sizeof(b));
+	if (b[0])
+		return;
+
+	// already on/with a relay, or on the backup: leave it alone
+	if (!NET_CompareAddress(&p->to, &p->srv) ||
+		(p->alt_s != INVALID_SOCKET && !NET_CompareAddress(&p->alt_to, &p->srv)))
+		return;
+	if (!QRY_Mesh_BestRelay(&p->srv, &relay, &cost))
+		return;
+	// expected ping within multipath_backup_tol of ours (unknown ping: take it)
+	if (p->mp_rtt[0] > 0 && cost > p->mp_rtt[0] + bound(0, multipath_backup_tol->integer, 500))
+		return;
+	if (p->alt_s == INVALID_SOCKET && (p->alt_s = NET_UDP_OpenSocket(NULL, 0, false)) == INVALID_SOCKET)
+		return;
+
+	p->alt_to = relay;
+	p->mp_rtt[1] = cost;
+	p->mp_miss[1] = p->mp_lost[1] = p->mp_wins = 0;
+	p->mp_acked[1] = false;
+	Netchan_OutOfBandPrint(p->alt_s, &p->alt_to, "meshrelay %s\n", NET_AdrToString(&p->srv, a, sizeof(a)));
+	Sys_Printf("peer %s:%d backup route via mesh qwfwd %s (~%d ms)\n", inet_ntoa(p->from.sin_addr),
+		(int)ntohs(p->from.sin_port), NET_AdrToString(&relay, b, sizeof(b)), cost);
+}
+
 static void FWD_mp_tick(peer_t *p)
 {
 	double now = Sys_DoubleTime();
@@ -151,6 +191,7 @@ static void FWD_mp_tick(peer_t *p)
 		now - p->mp_tx_at < 0.1) {
 		FWD_mp_switch(p, now, "rollback");
 		FWD_mp_close_alt(p);
+		p->mp_no_relay = true; // the server does not take relayed sessions
 		return;
 	}
 
@@ -352,6 +393,9 @@ peer_t	*FWD_peer_new(const char *remote_host, int remote_port, struct sockaddr_i
 	p->to		= to;
 	p->srv		= to;
 	p->relay	= false;
+	p->mp_no_relay	= false;
+	p->mp_relay_at	= 0;
+	p->mp_rtt[0]	= 0;
 	p->ps		= ( !new_peer && (proto == pr_q3 || p->ps == ps_pingprobe) ) ? p->ps : ps_challenge; // do not reset state for q3 or ongoing probes in case of peer reusing
 	p->qport	= qport;
 	p->proto	= proto;
@@ -637,35 +681,19 @@ static void FWD_CheckProbeCompletion(peer_t *p) {
         alt_idx = i;
       }
     }
-    struct sockaddr_in relay;
-    int relay_cost;
-    char relay_str[64];
-
+    // runner-up port as the first backup; FWD_mp_pick_relay upgrades it to a
+    // mesh qwfwd as soon as one is known (right away, or later in the game)
     p->alt_to = p->to;
-    // prefer a mesh qwfwd as backup: a different machine and network, so it
-    // survives what kills our own route. Needs a spare socket (runner-up port)
-    // and an expected ping within multipath_backup_tol of the chosen route.
-    if (alt_idx != -1 && !next_hop[0] && QRY_Mesh_BestRelay(&p->to, &relay, &relay_cost) &&
-        relay_cost <= best_rtt * 1000.0 + bound(0, multipath_backup_tol->integer, 500)) {
-      p->alt_to = relay;
-      alt_rtt = relay_cost / 1000.0;
-      Sys_Printf("peer %s:%d backup route via mesh qwfwd %s (~%d ms)\n", inet_ntoa(p->from.sin_addr),
-        (int)ntohs(p->from.sin_port), NET_AdrToString(&relay, relay_str, sizeof(relay_str)), relay_cost);
-    }
-    if (alt_idx != -1) {
-      char srv[64];
-
+    p->mp_lost[0] = p->mp_lost[1] = 0;
+    p->mp_data_at = p->mp_relay_at = 0;
+    p->mp_no_relay = !!next_hop[0];
+    p->mp_rtt[0] = best_rtt * 1000.0;
+    p->mp_rtt[1] = alt_rtt * 1000.0;
+    p->mp_ping_at = p->mp_switch_at = p->mp_rx_at = p->mp_tx_at = 0;
+    p->mp_miss[0] = p->mp_miss[1] = p->mp_wins = p->mp_rx_count = p->mp_rx_rate = 0;
+    p->mp_verify_at = 0;
+    if (alt_idx != -1)
       p->alt_s = p->probes[alt_idx].s;
-      if (!NET_CompareAddress(&p->alt_to, &p->srv))
-        Netchan_OutOfBandPrint(p->alt_s, &p->alt_to, "meshrelay %s\n", NET_AdrToString(&p->srv, srv, sizeof(srv)));
-      p->mp_lost[0] = p->mp_lost[1] = 0;
-      p->mp_data_at = 0;
-      p->mp_rtt[0] = best_rtt * 1000.0;
-      p->mp_rtt[1] = alt_rtt * 1000.0;
-      p->mp_ping_at = p->mp_switch_at = p->mp_rx_at = p->mp_tx_at = 0;
-      p->mp_miss[0] = p->mp_miss[1] = p->mp_wins = p->mp_rx_count = p->mp_rx_rate = 0;
-      p->mp_verify_at = 0;
-    }
   }
 
   // Close other sockets
@@ -1039,6 +1067,7 @@ retry:
       FWD_read_remote(p, p->s, 0);
     if (p->alt_s != INVALID_SOCKET && (p->alt_revents & POLLIN))
       FWD_read_remote(p, p->alt_s, 1);
+    FWD_mp_pick_relay(p, Sys_DoubleTime());
     FWD_mp_tick(p);
 
     if (p->ps == ps_challenge || p->ps == ps_connecting) {

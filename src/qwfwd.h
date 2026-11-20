@@ -209,6 +209,8 @@ typedef struct peer
 	struct sockaddr_in alt_to;		// where alt_s sends: the server, or a mesh qwfwd relaying to it
 	unsigned int mp_lost[2];		// health ping loss history, bit 0 = last tick
 	double mp_data_at;				// last non-ACK packet from remote on s (game stream)
+	double mp_relay_at;				// last mesh relay lookup, see FWD_mp_pick_relay()
+	qbool mp_no_relay;				// never use a mesh relay (proxy chain, or server refused it)
 	qbool relay;					// we are the mesh relay for another qwfwd: forward raw both ways
 } peer_t;
 

@@ -40,7 +40,10 @@ def main():
     threading.Thread(target=t.master, daemon=True).start()
     procs = [t.start_qwfwd(t.IP_A, t.PORT_A), t.start_qwfwd(t.IP_B, t.PORT_B)]
     print("waiting for mesh discovery...")
-    time.sleep(25)
+    # EARLY=1: connect before the mesh settled, the backup must be picked mid game
+    early = bool(os.environ.get("EARLY"))
+    time.sleep(3 if early else 25)
+    kill_after = 30 if early else 6
 
     a = (t.IP_A, t.PORT_A)
     c = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -63,9 +66,9 @@ def main():
     sc = None  # servercount from svc_serverdata
     rx, killed_at, began = [], None, None
     t0 = time.time()
-    while time.time() - t0 < 40:
+    while time.time() - t0 < 70:
         now = time.time()
-        if began and not killed_at and now - began > 6:
+        if began and not killed_at and now - began > kill_after:
             print("blackholing route A -> server")
             subprocess.run(["ip", "netns", "exec", "qa", "ip", "route", "add", "blackhole", "%s/32" % t.IP_S], check=True)
             killed_at = now
@@ -136,7 +139,9 @@ def main():
     print("max gap after failure: %.2fs" % gap)
     print("--- mvdsv (tail) ---\n" + "\n".join(srv_out.splitlines()[-15:]))
     if not ok:
-        print("--- A ---\n" + outs[0][-2000:] + "\n--- B ---\n" + outs[1][-2000:])
+        # the blackhole floods A's log with sendto errors, drop them
+        a_log = "\n".join(l for l in outs[0].splitlines() if "sendto" not in l)
+        print("--- A ---\n" + a_log[-2000:] + "\n--- B ---\n" + outs[1][-2000:])
     sys.exit(0 if ok else 1)
 
 
