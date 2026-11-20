@@ -1395,3 +1395,43 @@ void QRY_Init(void)
 	// clear masters
 	QRY_MastersInit();
 }
+
+// true when addr's IP belongs to a confirmed mesh qwfwd (any port: a relay
+// request comes from the asking proxy's outgoing socket, not its listen port)
+qbool QRY_Mesh_IsPeer(struct sockaddr_in *addr)
+{
+	server_t *sv;
+
+	for (sv = servers; sv; sv = sv->next)
+		if (sv->is_mesh && NET_CompareBaseAddress(addr, &sv->addr))
+			return true;
+	return false;
+}
+
+// cheapest mesh qwfwd that reports a loss free path to dest:
+// cost = our ping to the relay + the relay's reported ping to dest
+qbool QRY_Mesh_BestRelay(struct sockaddr_in *dest, struct sockaddr_in *relay, int *cost)
+{
+	server_t *sv;
+	int i, best = 0x7fffffff;
+
+	for (sv = servers; sv; sv = sv->next) {
+		if (!sv->is_mesh || !sv->hop2 || sv->ping < 0 || sv->ping >= 0xFFFF)
+			continue;
+		if (NET_CompareBaseAddress(dest, &sv->addr))
+			continue; // relay on the server's own host shares its fate
+		for (i = 0; i < sv->hop2_count; i++) {
+			hop2_entry_t *h = &sv->hop2[i];
+			if (!NET_CompareAddress(dest, &h->addr) || h->loss_pct || h->ping < 0)
+				continue;
+			if (sv->ping + h->ping < best) {
+				best = sv->ping + h->ping;
+				*relay = sv->addr;
+			}
+		}
+	}
+	if (best == 0x7fffffff)
+		return false;
+	*cost = best;
+	return true;
+}

@@ -137,6 +137,7 @@ DWORD WINAPI FWD_proc(void *lpParameter)
 	sv_pathprobe_delay  = Cvar_Get("sv_pathprobe_delay",  "1000", 0);
 	multipath_enable    = Cvar_Get("multipath_enable",    "1", 0); // on by default; 0 turns it off at runtime
 	multipath_switch_ms = Cvar_Get("multipath_switch_ms", "15", 0);
+	multipath_backup_tol = Cvar_Get("multipath_backup_tol", "20", 0); // backup may be at most this many ms slower than the old ping
 	multipath_notify    = Cvar_Get("multipath_notify",    "&cf80[qwfwd]&r &cff0Route to server degraded, switched to backup path&r", 0); // &cRGB = ezQuake console color
 
 	// register basic commands

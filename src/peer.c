@@ -57,6 +57,7 @@ cvar_t *sv_pathprobe_delay;
 cvar_t *multipath_enable;
 cvar_t *multipath_switch_ms;
 cvar_t *multipath_notify;
+cvar_t *multipath_backup_tol;
 
 // Multipath data plane: client->server goes out p->s only (duplicating would
 // make the server flip the client address on every packet), alt_s is a hot
@@ -74,7 +75,9 @@ void FWD_mp_close_alt(peer_t *p)
 static void FWD_mp_switch(peer_t *p, double now, const char *why)
 {
 	int s = p->s, m = p->mp_miss[0];
+	unsigned int l = p->mp_lost[0];
 	double t = p->mp_rtt[0];
+	struct sockaddr_in to = p->to;
 
 	Sys_Printf("peer %s:%d multipath switch (%s) %.0fms -> %.0fms\n", inet_ntoa(p->from.sin_addr),
 		(int)ntohs(p->from.sin_port), why, p->mp_rtt[0], p->mp_rtt[1]);
@@ -83,21 +86,34 @@ static void FWD_mp_switch(peer_t *p, double now, const char *why)
 		Netchan_OutOfBandPrint(net_socket, &p->from, "%c%s &c0f0(%s)&r\n", A2C_PRINT, multipath_notify->string, why);
 	p->s = p->alt_s;
 	p->alt_s = s;
+	p->to = p->alt_to;
+	p->alt_to = to;
+	p->mp_lost[0] = p->mp_lost[1];
+	p->mp_lost[1] = l;
 	p->mp_rtt[0] = p->mp_rtt[1];
 	p->mp_rtt[1] = t;
 	p->mp_miss[0] = p->mp_miss[1];
 	p->mp_miss[1] = m;
 	p->mp_acked[0] = p->mp_acked[1] = false;
 	p->mp_wins = 0;
-	p->mp_switch_at = p->mp_rx_at = now;
+	p->mp_switch_at = p->mp_rx_at = p->mp_data_at = now;
 	// new primary must prove it streams before silence can fire again
 	p->mp_rx_rate = p->mp_rx_count = 0;
 	p->mp_verify_at = 0;
 }
 
+static int FWD_mp_bits(unsigned int v)
+{
+	int n = 0;
+	for (; v; v &= v - 1)
+		n++;
+	return n;
+}
+
 static void FWD_mp_tick(peer_t *p)
 {
 	double now = Sys_DoubleTime();
+	char srv[64];
 	int i;
 
 	if (p->alt_s == INVALID_SOCKET || p->ps != ps_connected)
@@ -126,7 +142,16 @@ static void FWD_mp_tick(peer_t *p)
 		p->mp_verify_at = now;
 		p->mp_vack = false;
 		Netchan_OutOfBandPrint(p->s, &p->to, "%c\n", A2A_PING);
-		Netchan_OutOfBandPrint(p->alt_s, &p->to, "%c\n", A2A_PING);
+		Netchan_OutOfBandPrint(p->alt_s, &p->alt_to, "%c\n", A2A_PING);
+	}
+
+	// rollback: the new path answers pings but carries no game data (e.g. the
+	// server refused the address change). Go back and drop the backup for good.
+	if (p->mp_switch_at && p->mp_data_at <= p->mp_switch_at && now - p->mp_switch_at > 1.5 &&
+		now - p->mp_tx_at < 0.1) {
+		FWD_mp_switch(p, now, "rollback");
+		FWD_mp_close_alt(p);
+		return;
 	}
 
 	if (now - p->mp_ping_at < 1.0)
@@ -135,21 +160,34 @@ static void FWD_mp_tick(peer_t *p)
 	p->mp_rx_rate = p->mp_rx_count;
 	p->mp_rx_count = 0;
 
-	for (i = 0; p->mp_ping_at && i < 2; i++)
+	for (i = 0; p->mp_ping_at && i < 2; i++) {
 		p->mp_miss[i] = p->mp_acked[i] ? 0 : p->mp_miss[i] + 1;
+		p->mp_lost[i] = (p->mp_lost[i] << 1) | !p->mp_acked[i];
+	}
 
 	p->mp_wins = (!p->mp_miss[1] && p->mp_rtt[1] + bound(1, multipath_switch_ms->integer, 200) < p->mp_rtt[0]) ? p->mp_wins + 1 : 0;
 
 	// primary dead (3 pings) and alt alive, or alt faster 3 ticks in a row outside 10s cooldown
+	// partial loss: 3+ of the last 10 health pings lost while the backup lost none
+	// and pings close to the old route (multipath_backup_tol)
 	if (p->mp_miss[0] >= 3 && !p->mp_miss[1])
+		FWD_mp_switch(p, now, "loss");
+	else if (FWD_mp_bits(p->mp_lost[0] & 0x3ff) >= 3 && !(p->mp_lost[1] & 0x3ff) &&
+		p->mp_rtt[1] <= p->mp_rtt[0] + bound(0, multipath_backup_tol->integer, 500) && now - p->mp_switch_at > 10.0)
 		FWD_mp_switch(p, now, "loss");
 	else if (p->mp_wins >= 3 && now - p->mp_switch_at > 10.0)
 		FWD_mp_switch(p, now, "rtt");
 
 	p->mp_ping_at = now;
 	p->mp_acked[0] = p->mp_acked[1] = false;
+	NET_AdrToString(&p->srv, srv, sizeof(srv));
+	// (re)register the session on the mesh relay; cheap, survives a relay restart
+	if (!NET_CompareAddress(&p->alt_to, &p->srv))
+		Netchan_OutOfBandPrint(p->alt_s, &p->alt_to, "meshrelay %s\n", srv);
+	if (!NET_CompareAddress(&p->to, &p->srv))
+		Netchan_OutOfBandPrint(p->s, &p->to, "meshrelay %s\n", srv);
 	Netchan_OutOfBandPrint(p->s, &p->to, "%c\n", A2A_PING);
-	Netchan_OutOfBandPrint(p->alt_s, &p->to, "%c\n", A2A_PING);
+	Netchan_OutOfBandPrint(p->alt_s, &p->alt_to, "%c\n", A2A_PING);
 }
 
 static void FWD_mp_ack(peer_t *p, int idx)
@@ -177,8 +215,17 @@ static void FWD_read_remote(peer_t *p, int sock, int idx)
 
 		// we should check is this packet from remote server, this may be some
 		// evil packet from haxors...
-		if (!NET_CompareAddress(&p->to, &net_from))
+		if (!NET_CompareAddress(idx ? &p->alt_to : &p->to, &net_from))
 			continue;
+
+		// mesh relay for another qwfwd: everything goes back untouched
+		if (p->relay) {
+			NET_SendPacket(net_socket, net_message.cursize, net_message.data, &p->from);
+			continue;
+		}
+
+		if (idx == 0 && !(net_message.cursize == 1 && net_message.data[0] == A2A_ACK))
+			p->mp_data_at = Sys_DoubleTime();
 
 		if (idx == 0) {
 			p->mp_rx_at = Sys_DoubleTime();
@@ -209,6 +256,30 @@ static void FWD_read_remote(peer_t *p, int sock, int idx)
 		if (p->ps >= ps_connected)
 			NET_SendPacket(net_socket, net_message.cursize, net_message.data, &p->from);
 	}
+}
+
+// "meshrelay <ip:port>" from another mesh qwfwd: carry one of its sessions to
+// that server as a hot backup route. No handshake here, the server already
+// knows the player (qport) and moves it only if it trusts us (sv_proxy_migrate).
+void SVC_MeshRelay(void)
+{
+	char host[64], *colon;
+	peer_t *p;
+
+	if (!multipath_enable->integer || !QRY_Mesh_IsPeer(&net_from) || Cmd_Argc() != 2)
+		return;
+	strlcpy(host, Cmd_Argv(1), sizeof(host));
+	if (!(colon = strchr(host, ':')))
+		return;
+	*colon = 0;
+
+	p = FWD_peer_by_addr(&net_from);
+	if (p && !p->relay)
+		return; // that address is a real player session
+	if (!(p = FWD_peer_new(host, atoi(colon + 1), &net_from, "\\name\\meshrelay", 0, pr_qw, true)))
+		return;
+	p->ps = ps_connected;
+	p->relay = true;
 }
 
 peer_t	*FWD_peer_by_addr(struct sockaddr_in *from)
@@ -272,12 +343,15 @@ peer_t	*FWD_peer_new(const char *remote_host, int remote_port, struct sockaddr_i
 	}
 
 	// reused for another protocol or destination: the old standby path is meaningless
-	if (!new_peer && (proto != p->proto || !NET_CompareAddress(&p->to, &to)))
+	// reconnect: the standby (and a relay we may have switched to) is stale
+	if (!new_peer)
 		FWD_mp_close_alt(p);
 
 	p->s		= ( new_peer ) ? s : p->s; // reuse socket in case of reusing
 	p->from		= *from;
 	p->to		= to;
+	p->srv		= to;
+	p->relay	= false;
 	p->ps		= ( !new_peer && (proto == pr_q3 || p->ps == ps_pingprobe) ) ? p->ps : ps_challenge; // do not reset state for q3 or ongoing probes in case of peer reusing
 	p->qport	= qport;
 	p->proto	= proto;
@@ -563,8 +637,29 @@ static void FWD_CheckProbeCompletion(peer_t *p) {
         alt_idx = i;
       }
     }
+    struct sockaddr_in relay;
+    int relay_cost;
+    char relay_str[64];
+
+    p->alt_to = p->to;
+    // prefer a mesh qwfwd as backup: a different machine and network, so it
+    // survives what kills our own route. Needs a spare socket (runner-up port)
+    // and an expected ping within multipath_backup_tol of the chosen route.
+    if (alt_idx != -1 && !next_hop[0] && QRY_Mesh_BestRelay(&p->to, &relay, &relay_cost) &&
+        relay_cost <= best_rtt * 1000.0 + bound(0, multipath_backup_tol->integer, 500)) {
+      p->alt_to = relay;
+      alt_rtt = relay_cost / 1000.0;
+      Sys_Printf("peer %s:%d backup route via mesh qwfwd %s (~%d ms)\n", inet_ntoa(p->from.sin_addr),
+        (int)ntohs(p->from.sin_port), NET_AdrToString(&relay, relay_str, sizeof(relay_str)), relay_cost);
+    }
     if (alt_idx != -1) {
+      char srv[64];
+
       p->alt_s = p->probes[alt_idx].s;
+      if (!NET_CompareAddress(&p->alt_to, &p->srv))
+        Netchan_OutOfBandPrint(p->alt_s, &p->alt_to, "meshrelay %s\n", NET_AdrToString(&p->srv, srv, sizeof(srv)));
+      p->mp_lost[0] = p->mp_lost[1] = 0;
+      p->mp_data_at = 0;
       p->mp_rtt[0] = best_rtt * 1000.0;
       p->mp_rtt[1] = alt_rtt * 1000.0;
       p->mp_ping_at = p->mp_switch_at = p->mp_rx_at = p->mp_tx_at = 0;
@@ -854,6 +949,16 @@ retry:
       // check for bans.
       if (SV_IsBanned(&net_from))
         continue;
+
+      // mesh relay session: forward untouched (health pings included, they
+      // must reach the server to measure the full path); refresh requests stay here
+      if ((p = FWD_peer_by_addr(&net_from)) && p->relay) {
+        if (!(net_message.cursize > 13 && *(int *)net_message.data == -1 &&
+              !strncmp((char *)net_message.data + 4, "meshrelay", 9)))
+          NET_SendPacket(p->s, net_message.cursize, net_message.data, &p->to);
+        time(&p->last);
+        continue;
+      }
 
       if (net_message.cursize == 1 && net_message.data[0] == A2A_ACK) {
         QRY_SV_PingReply();

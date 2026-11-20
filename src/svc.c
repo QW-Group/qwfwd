@@ -500,6 +500,8 @@ qbool SV_ConnectionlessPacket(void)
 			SVC_QRY_MeshProbe();
 		else if (!strcmp(c, "meshstatus"))
 			SVC_QRY_MeshStatus();
+		else if (!strcmp(c, "meshrelay"))
+			SVC_MeshRelay();
 		else if (!strcmp(c,"connect"))
 			SVC_DirectConnect();
 		else if (!strcmp(c,"getchallenge"))

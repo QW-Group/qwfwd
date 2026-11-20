@@ -205,6 +205,11 @@ typedef struct peer
 	int mp_rx_rate;					// ... in the previous 1s tick (pps)
 	double mp_verify_at;			// silence seen, verify pings sent at; 0 = idle
 	qbool mp_vack;					// alt_s answered the verify ping
+	struct sockaddr_in srv;			// the real game server (p->to may be a mesh relay after a switch)
+	struct sockaddr_in alt_to;		// where alt_s sends: the server, or a mesh qwfwd relaying to it
+	unsigned int mp_lost[2];		// health ping loss history, bit 0 = last tick
+	double mp_data_at;				// last non-ACK packet from remote on s (game stream)
+	qbool relay;					// we are the mesh relay for another qwfwd: forward raw both ways
 } peer_t;
 
 // used for passing params for thread
@@ -272,7 +277,7 @@ extern proxy_static_t ps;
 extern cvar_t *developer, *maxclients, *hostname;
 extern cvar_t *hostport, *countrycode, *city, *coords;
 extern cvar_t *sv_pathprobe_enable, *sv_pathprobe_count, *sv_pathprobe_delay;
-extern cvar_t *multipath_enable, *multipath_switch_ms, *multipath_notify;
+extern cvar_t *multipath_enable, *multipath_switch_ms, *multipath_notify, *multipath_backup_tol;
 
 //
 // token.c
@@ -531,6 +536,9 @@ qbool				QRY_Mesh_IsMeshReply(void);
 void				QRY_Mesh_HandleReply(void);
 void				SVC_QRY_MeshProbe(void);
 void				SVC_QRY_MeshStatus(void);
+qbool				QRY_Mesh_IsPeer(struct sockaddr_in *addr);
+qbool				QRY_Mesh_BestRelay(struct sockaddr_in *dest, struct sockaddr_in *relay, int *cost);
+void				SVC_MeshRelay(void);
 
 //
 // huff.c
