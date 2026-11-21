@@ -154,6 +154,7 @@ DWORD WINAPI FWD_proc(void *lpParameter)
 	Sys_DoubleTime();		// init time
 	Ban_Init();				// init bans, this will exec "qwfwd_listip.cfg" as well, so you don't have to put it in qwfwd.cfg
 	NET_Init();				// init network
+	NET_DNS_Init();
 	FWD_Init();				// init peers
 	QRY_Init();				// init query
 
@@ -177,10 +178,12 @@ DWORD WINAPI FWD_proc(void *lpParameter)
 
 		Cbuf_Execute();			// Process console commands.
 		FWD_update_peers();		// Do basic proxy job.
+		NET_DNS_Frame();
 		QRY_Frame();			// Do query related job.
 		SV_CleanBansIPList();	// Periodically check is it time to remove some bans.
 	}
 
+	NET_DNS_Shutdown();
 	Cmd_DeInit();		// this is optional, but helps me check memory leaks
 	Cvar_DeInit();		// this is optional, but helps me check memory leaks
 

@@ -298,7 +298,7 @@ static void FWD_read_remote(peer_t *p, int sock, int idx)
 			continue;
 		}
 
-		if (p->ps >= ps_connected)
+		if (!p->connect_pending && p->ps >= ps_connected)
 			NET_SendPacket(net_socket, net_message.cursize, net_message.data, &p->from);
 	}
 }
@@ -309,6 +309,7 @@ static void FWD_read_remote(peer_t *p, int sock, int idx)
 void SVC_MeshRelay(void)
 {
 	char host[64], *colon;
+	struct sockaddr_in to = {0};
 	peer_t *p;
 
 	if (!multipath_enable->integer || !QRY_Mesh_IsPeer(&net_from) || Cmd_Argc() != 2)
@@ -317,11 +318,16 @@ void SVC_MeshRelay(void)
 	if (!(colon = strchr(host, ':')))
 		return;
 	*colon = 0;
+	// numeric only: a mesh peer never makes us resolve names
+	if (!NET_ParseIPv4(host, &to.sin_addr))
+		return;
+	to.sin_family = AF_INET;
+	to.sin_port = htons((unsigned short)atoi(colon + 1));
 
 	p = FWD_peer_by_addr(&net_from);
 	if (p && !p->relay)
 		return; // that address is a real player session
-	if (!(p = FWD_peer_new(host, atoi(colon + 1), &net_from, "\\name\\meshrelay", 0, pr_qw, true)))
+	if (!(p = FWD_peer_new(&to, &net_from, "\\name\\meshrelay", 0, pr_qw)))
 		return;
 	p->ps = ps_connected;
 	p->relay = true;
@@ -351,21 +357,17 @@ static int parse_color(const char *userinfo, const char *key)
 	return (color < 0) ? 0 : ((color > 16) ? 16 : color);
 }
 
-peer_t	*FWD_peer_new(const char *remote_host, int remote_port, struct sockaddr_in *from, const char *userinfo, int qport, protocol_t proto, qbool link)
+peer_t	*FWD_peer_new(struct sockaddr_in *to, struct sockaddr_in *from, const char *userinfo, int qport, protocol_t proto)
 {
 	peer_t *p;
-	struct sockaddr_in to;
 	int s = INVALID_SOCKET;
 	qbool new_peer = false;
 
-	if (!NET_GetSockAddrIn_ByHostAndPort(&to, remote_host, remote_port))
-		return NULL; // failed to resolve host name?
-
-	if (!SV_IsWhitelisted(&to))
+	if (!SV_IsWhitelisted(to))
 		return NULL;
 
 	// check for bans.
-	if (SV_IsBanned(&to))
+	if (SV_IsBanned(to))
 		return NULL;
 
 	// we probably already have such peer, reuse it then
@@ -386,16 +388,24 @@ peer_t	*FWD_peer_new(const char *remote_host, int remote_port, struct sockaddr_i
 		p = Sys_malloc(sizeof(*p)); // alloc peer if needed
 		p->alt_s = INVALID_SOCKET;
 	}
+	else if (p->proto == pr_q3 && proto == pr_q3 && p->ps == ps_challenge && p->qport != qport)
+	{
+		// A Q3 connectResponse has no qport. Give the new handshake its own UDP port.
+		if ((s = NET_UDP_OpenSocket(NULL, 0, true)) == INVALID_SOCKET)
+			return NULL;
+		closesocket(p->s);
+		p->connect = 0;
+	}
 
-	// reused for another protocol or destination: the old standby path is meaningless
 	// reconnect: the standby (and a relay we may have switched to) is stale
 	if (!new_peer)
 		FWD_mp_close_alt(p);
 
-	p->s		= ( new_peer ) ? s : p->s; // reuse socket in case of reusing
+	if (s != INVALID_SOCKET)
+		p->s = s;
 	p->from		= *from;
-	p->to		= to;
-	p->srv		= to;
+	p->to		= *to;
+	p->srv		= *to;
 	p->relay	= false;
 	p->mp_no_relay	= false;
 	p->mp_relay_at	= 0;
@@ -412,7 +422,7 @@ peer_t	*FWD_peer_new(const char *remote_host, int remote_port, struct sockaddr_i
 	time(&p->last);
 
 	// link only new peer, in case of reusing it already done...
-	if (new_peer && link)
+	if (new_peer)
 	{
 		p->next = peers;
 		peers = p;
@@ -490,7 +500,7 @@ static void FWD_check_timeout(void)
 	for (p = peers; p; p = p->next)
 	{
 		// this is helper for q3 to guess disconnect asap
-		if (p->proto == pr_q3)
+		if (!p->connect_pending && p->proto == pr_q3)
 		{
 			if (cur_time - p->last > 1 && d_cur_time - p->q3_disconnect_check > 0.05 && p->ps == ps_connected)
 			{
@@ -502,12 +512,16 @@ static void FWD_check_timeout(void)
 			}
 		}
 
-		if (cur_time - p->last < 15) // few seconds timeout
-			continue;
-
-		Sys_DPrintf("peer %s:%d timed out\n", inet_ntoa(p->from.sin_addr), (int)ntohs(p->from.sin_port));
-
-		p->ps = ps_drop;
+		if (cur_time - p->last >= 15)
+		{
+			Sys_DPrintf("peer %s:%d timed out\n", inet_ntoa(p->from.sin_addr), (int)ntohs(p->from.sin_port));
+			p->ps = ps_drop;
+		}
+		else if (!p->connect_pending && p->ps == ps_challenge && cur_time - p->connect > 2)
+		{
+			p->connect = cur_time;
+			Netchan_OutOfBandPrint(p->s, &p->to, "getchallenge%s", p->proto == pr_qw ? "\n" : "");
+		}
 	}
 }
 
@@ -1024,33 +1038,32 @@ retry:
           break;
       }
 
-      // peer was not found
       if (!p)
         continue;
 
       // forward data to the server/proxy
       if (p->ps >= ps_connected) {
-        cnt = 1; // one packet by default
+        cnt = p->connect_pending ? 0 : 1;
 
-        // check for "drop" aka client disconnect,
-        // first 10 bytes for NON connectionless packet is netchan related shit
-        // in QW
+        // A QW client packet starts with two sequence numbers and a little-endian qport.
         if (p->proto == pr_qw && !connectionless && net_message.cursize > 10 &&
-            net_message.data[10] == clc_stringcmd) {
-          if (!strcmp((char *)net_message.data + 10 + 1, "drop")) {
-            //						Sys_Printf("peer drop
-            // detected\n");
-            p->ps = ps_drop; // drop peer ASAP
-            cnt = 3;         // send few packets due to possibile packet lost
-          }
+            net_message.data[10] == clc_stringcmd && !strcmp((char *)net_message.data + 11, "drop")) {
+          unsigned short qport = net_message.data[8] | (net_message.data[9] << 8);
+          if (qport != (unsigned short)p->qport)
+            continue;
+
+          p->ps = ps_drop;
+          SVC_CancelConnectForRoute(p);
+          cnt = 3; // Repeat the drop in case of packet loss.
         }
 
         for (; cnt > 0; cnt--)
           NET_SendPacket(p->s, net_message.cursize, net_message.data, &p->to);
-        if (!connectionless)
+        if (!connectionless && !p->connect_pending)
           p->mp_tx_at = Sys_DoubleTime();
       }
 
+      // Keep the old connection alive while a new destination resolves.
       time(&p->last);
     }
   }
@@ -1071,6 +1084,8 @@ retry:
 
     // revents belong to the sockets polled this pass; a switch inside
     // FWD_mp_tick happens after both reads, so they still line up
+    if (p->ps == ps_drop)
+      continue;
     if (p->revents & POLLIN)
       FWD_read_remote(p, p->s, 0);
     if (p->alt_s != INVALID_SOCKET && (p->alt_revents & POLLIN))
@@ -1078,7 +1093,7 @@ retry:
     FWD_mp_pick_relay(p, Sys_DoubleTime());
     FWD_mp_tick(p);
 
-    if (p->ps == ps_challenge || p->ps == ps_connecting) {
+    if (!p->connect_pending && p->ps == ps_connecting) {
       // send challenge time to time
       if (time(NULL) - p->connect > 2) {
         p->connect = time(NULL);

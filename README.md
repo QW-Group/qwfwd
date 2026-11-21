@@ -18,11 +18,20 @@ You can find the prebuilt binaries on [this download page][qwfwd-builds].
 
 None at the moment.
 
+## Hostname resolution
+
+DNS names in `prx`, `masters`, and `masters_filter_servers` work as before. If a
+name is only resolvable through Avahi, use its IP address or add an entry to
+`/etc/hosts` on the machine running qwfwd.
+
 ## Building binaries
 
 ### Build from source with CMake
 
-Assuming you have installed essential build tools and ``CMake``
+Install the essential build tools and CMake 3.14 or newer. CMake downloads
+and statically links the pinned c-ares release for asynchronous DNS.
+For an offline build, set `-DFETCHCONTENT_SOURCE_DIR_CARES=/path/to/c-ares-1.34.9`
+to the unpacked release sources.
 ```bash
 mkdir build && cmake -B build . && cmake --build build
 ```
