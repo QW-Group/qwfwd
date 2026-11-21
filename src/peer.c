@@ -327,6 +327,16 @@ void SVC_MeshRelay(void)
 	p = FWD_peer_by_addr(&net_from);
 	if (p && !p->relay)
 		return; // that address is a real player session
+	if (!p)
+	{
+		int relays = 0;
+		peer_t *q;
+
+		for (q = peers; q; q = q->next)
+			relays += q->relay;
+		if (relays >= maxclients->integer)
+			return;
+	}
 	if (!(p = FWD_peer_new(&to, &net_from, "\\name\\meshrelay", 0, pr_qw)))
 		return;
 	p->ps = ps_connected;
@@ -1114,7 +1124,8 @@ int FWD_peers_count(void)
 
 	for (cnt = 0, p = peers; p; p = p->next)
 	{
-		cnt++;
+		if (!p->relay)
+			cnt++;
 	}
 
 	return cnt;
