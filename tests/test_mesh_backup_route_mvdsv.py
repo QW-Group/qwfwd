@@ -8,7 +8,9 @@ the client must keep receiving the game through B without reconnecting.
 
 Linux, root. Env: QWFWD_EXE, MVDSV_DIR (dir with ./mvdsv, id1/pak0.pak, ktx/qwprogs.so).
 NO_MIGRATE=1 runs mvdsv with an empty sv_proxy_migrate: expect a switch, then
-"multipath switch (rollback)" in A's log and the remaining checks to fail.
+"multipath switch (rollback)" in A's log and no migration on the server.
+PRX_HOST=1 puts a hostname (from /etc/hosts) in prx instead of an IP, so the
+connect goes through the async DNS path.
 MP_MODE=0|1 connects with "setinfo multipath N" (no backup / same-proxy
 only): expect the player to spawn and no mesh backup to be chosen.
 """
@@ -57,7 +59,12 @@ def main():
     c.settimeout(2)
     c.sendto(OOB + b"getchallenge\n", a)
     chal = c.recvfrom(2048)[0][5:].split(b"\x00")[0].split()[0].decode()
-    c.sendto(OOB + ('connect 28 %d %s "\\name\\migtest%s\\prx\\%s:%d"\n' % (QPORT, chal, mp_info, t.IP_S, PORT_S)).encode(), a)
+    prx = t.IP_S
+    if os.environ.get("PRX_HOST"):
+        prx = "qwsrv.mesh.test"
+        with open("/etc/hosts", "a") as h:
+            h.write("%s %s\n" % (t.IP_S, prx))
+    c.sendto(OOB + ('connect 28 %d %s "\\name\\migtest%s\\prx\\%s:%d"\n' % (QPORT, chal, mp_info, prx, PORT_S)).encode(), a)
     while True:  # wait for 'j' (accept), skipping prints
         d = c.recvfrom(4096)[0]
         if d.startswith(OOB + b"j"):
@@ -126,6 +133,12 @@ def main():
         p.terminate()
         outs.append(p.communicate(timeout=5)[0])
 
+    if os.environ.get("PRX_HOST"):
+        subprocess.run("sed -i '/qwsrv.mesh.test/d' /etc/hosts", shell=True)
+    if os.environ.get("NO_MIGRATE"):
+        ok = began is not None and "multipath switch (rollback)" in outs[0] and "migrated" not in srv_out
+        print("[%s] NO_MIGRATE: switch, rollback, server did not migrate" % ("PASS" if ok else "FAIL"))
+        sys.exit(0 if ok else 1)
     if mp_mode is not None:
         ok = began is not None and "backup route via mesh" not in outs[0]
         print("[%s] MP_MODE=%s: spawned, no mesh backup" % ("PASS" if ok else "FAIL", mp_mode))

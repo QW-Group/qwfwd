@@ -526,6 +526,7 @@ static void SVC_DirectConnect (void)
 	}
 
 	proto = challenges[i].proto;
+	challenge = challenges[i].challenge;
 
 	// different for qw and q3
 	if ( proto == pr_qw )
