@@ -181,12 +181,315 @@ static qbool CheckUserinfo( char *userinfobuf, unsigned int bufsize, char *useri
 	return true;
 }
 
+#define MAX_PENDING_CONNECTS 64
+#define MAX_PENDING_CONNECTS_PER_IP 8
+
+typedef struct
+{
+	struct sockaddr_in from;
+	int socket, port, qport, challenge;
+	protocol_t proto;
+	char host[MAX_PRX_HOST];
+	char userinfo[MAX_INFO_STRING];
+} connect_request_t;
+
+typedef struct connect_lookup
+{
+	struct connect_lookup *next;
+	struct sockaddr_in owner;
+	char host[];
+} connect_lookup_t;
+
+typedef struct pending_connect
+{
+	struct pending_connect *next;
+	connect_request_t request;
+	connect_lookup_t *lookup;
+} pending_connect_t;
+
+static pending_connect_t *pending_connects;
+static connect_lookup_t *connect_lookups;
+
+static void SVC_FinishConnect(connect_request_t *request, struct in_addr address)
+{
+	struct sockaddr_in to = {0};
+	peer_t *p;
+
+	to.sin_family = AF_INET;
+	to.sin_addr = address;
+	to.sin_port = htons((unsigned short)request->port);
+	p = FWD_peer_new(&to, &request->from, request->userinfo, request->qport, request->proto);
+
+	Sys_DPrintf("peer %s:%d %s\n", inet_ntoa(request->from.sin_addr),
+		(int)ntohs(request->from.sin_port), p ? "added or reused" : "was not added");
+	if (!p)
+		return;
+
+	strlcpy(p->prx_host, request->host, sizeof(p->prx_host));
+
+	if (request->proto == pr_qw)
+	{
+		Netchan_OutOfBandPrint(request->socket, &request->from, "%c", S2C_CONNECTION);
+	}
+	else if (p->ps == ps_connected)
+	{
+		if (p->challenge == request->challenge)
+			Netchan_OutOfBandPrint(request->socket, &request->from, "connectResponse");
+		else
+			Netchan_OutOfBandPrint(request->socket, &request->from, "print\n/reconnect ASAP!\n");
+	}
+}
+
+static void SVC_ConnectError(connect_request_t *request, const char *message)
+{
+	if (request->proto == pr_qw)
+		Netchan_OutOfBandPrint(request->socket, &request->from, "%c\n%s\n", A2C_PRINT, message);
+	else
+		Netchan_OutOfBandPrint(request->socket, &request->from, "print\n%s\n", message);
+}
+
+static qbool SVC_ProxyFull(connect_request_t *request)
+{
+	char message[MAX_INFO_STRING + 32];
+
+	if (FWD_peers_count() < maxclients->integer)
+		return false;
+
+	snprintf(message, sizeof(message), "proxy@%s is full\n", hostname->string);
+	SVC_ConnectError(request, message);
+	return true;
+}
+
+static void SVC_RemovePendingConnect(pending_connect_t **link)
+{
+	pending_connect_t *pending = *link;
+	peer_t *p = FWD_peer_by_addr(&pending->request.from);
+	if (p)
+		p->connect_pending = false;
+	*link = pending->next;
+	Sys_free(pending);
+}
+
+static qbool SVC_SameRoute(const connect_request_t *request, const char *host, unsigned short port, const char *userinfo)
+{
+	char current_chain[MAX_PRX_HOST], requested_chain[MAX_PRX_HOST];
+
+	if ((unsigned short)request->port != port || stricmp(host, request->host))
+		return false;
+
+	Info_ValueForKey(userinfo, QWFWD_PRX_KEY, current_chain, sizeof(current_chain));
+	Info_ValueForKey(request->userinfo, QWFWD_PRX_KEY, requested_chain, sizeof(requested_chain));
+	return !stricmp(current_chain, requested_chain);
+}
+
+void SVC_CancelConnectForRoute(peer_t *p)
+{
+	pending_connect_t **link;
+
+	for (link = &pending_connects; *link; link = &(*link)->next)
+	{
+		connect_request_t *request = &(*link)->request;
+
+		if (!NET_CompareAddress(&request->from, &p->from))
+			continue;
+
+		if (request->proto == p->proto && request->qport == p->qport &&
+			SVC_SameRoute(request, p->prx_host, ntohs(p->to.sin_port), p->userinfo))
+			SVC_RemovePendingConnect(link);
+		return;
+	}
+}
+
+static void SVC_ConnectResolved(const struct in_addr *address, void *arg);
+
+static connect_lookup_t *SVC_LookupConnectHost(connect_request_t *request)
+{
+	connect_lookup_t *lookup;
+	int count = 0, count_for_ip = 0;
+
+	for (lookup = connect_lookups; lookup; lookup = lookup->next)
+	{
+		if (!stricmp(lookup->host, request->host))
+			return lookup;
+		count++;
+		if (NET_CompareBaseAddress(&lookup->owner, &request->from))
+			count_for_ip++;
+	}
+
+	// Keep the lookup charged to its owner until the DNS callback runs.
+	if (count_for_ip >= MAX_PENDING_CONNECTS_PER_IP)
+	{
+		SVC_ConnectError(request, "Too many DNS requests from your IP");
+		return NULL;
+	}
+
+	if (count >= MAX_PRX_DNS_REQUESTS)
+	{
+		SVC_ConnectError(request, "Proxy DNS queue is full");
+		return NULL;
+	}
+
+	lookup = Sys_malloc(sizeof(*lookup) + strlen(request->host) + 1);
+	lookup->owner = request->from;
+	strcpy(lookup->host, request->host);
+	if (!NET_DNS_Resolve(lookup->host, SVC_ConnectResolved, lookup))
+	{
+		SVC_ConnectError(request, "Proxy DNS queue is full");
+		Sys_free(lookup);
+		return NULL;
+	}
+
+	lookup->next = connect_lookups;
+	connect_lookups = lookup;
+	return lookup;
+}
+
+static qbool SVC_CompleteConnect(pending_connect_t *pending, const struct in_addr *address)
+{
+	connect_request_t *request = &pending->request;
+	unsigned int i = FindChallengeForAddr(&request->from);
+
+	if (ps.wanttoexit || i >= MAX_CHALLENGES ||
+		challenges[i].challenge != request->challenge || challenges[i].proto != request->proto ||
+		SV_IsBanned(&request->from))
+		return true;
+
+	if (stricmp(pending->lookup->host, request->host))
+	{
+		// A newer connect asked for another host while this lookup was running.
+		connect_lookup_t *lookup = SVC_LookupConnectHost(request);
+		if (lookup)
+		{
+			pending->lookup = lookup;
+			return false;
+		}
+	}
+	else if (address)
+	{
+		if (FWD_peer_by_addr(&request->from) || !SVC_ProxyFull(request))
+			SVC_FinishConnect(request, *address);
+	}
+	else
+	{
+		char message[sizeof(request->host) + 32];
+		snprintf(message, sizeof(message), "Could not resolve %s", request->host);
+		SVC_ConnectError(request, message);
+	}
+
+	return true;
+}
+
+static void SVC_ConnectResolved(const struct in_addr *address, void *arg)
+{
+	connect_lookup_t *lookup = arg, **lookup_link = &connect_lookups;
+	pending_connect_t **link = &pending_connects, *pending;
+
+	while (*lookup_link != lookup)
+		lookup_link = &(*lookup_link)->next;
+	*lookup_link = lookup->next;
+
+	while ((pending = *link) != NULL)
+	{
+		if (pending->lookup != lookup || !SVC_CompleteConnect(pending, address))
+		{
+			link = &pending->next;
+			continue;
+		}
+
+		SVC_RemovePendingConnect(link);
+	}
+
+	Sys_free(lookup);
+}
+
+static void SVC_StartConnect(connect_request_t *request)
+{
+	pending_connect_t **link = &pending_connects, *pending;
+	struct in_addr address;
+	peer_t *p;
+	qbool same_pending_route;
+	int count = 0, count_for_ip = 0;
+
+	while ((pending = *link) != NULL)
+	{
+		if (NET_CompareAddress(&pending->request.from, &request->from))
+			break;
+		if (NET_CompareBaseAddress(&pending->request.from, &request->from))
+			count_for_ip++;
+		link = &pending->next;
+		count++;
+	}
+
+	same_pending_route = pending && pending->request.proto == request->proto &&
+		SVC_SameRoute(request, pending->request.host, pending->request.port, pending->request.userinfo);
+	p = FWD_peer_by_addr(&request->from);
+	if (!(same_pending_route && p) && SVC_ProxyFull(request))
+	{
+		if (pending && !same_pending_route)
+			SVC_RemovePendingConnect(link);
+		return;
+	}
+
+	if (NET_ParseIPv4(request->host, &address))
+	{
+		if (pending)
+			SVC_RemovePendingConnect(link);
+		SVC_FinishConnect(request, address);
+		return;
+	}
+
+	if (!pending)
+	{
+		connect_lookup_t *lookup;
+
+		if (count >= MAX_PENDING_CONNECTS)
+		{
+			SVC_ConnectError(request, "Proxy has too many pending connections");
+			return;
+		}
+		if (count_for_ip >= MAX_PENDING_CONNECTS_PER_IP)
+		{
+			SVC_ConnectError(request, "Too many pending connections from your IP");
+			return;
+		}
+		lookup = SVC_LookupConnectHost(request);
+		if (!lookup)
+			return;
+		pending = Sys_malloc(sizeof(*pending));
+		pending->lookup = lookup;
+		pending->next = NULL;
+		*link = pending;
+	}
+	else if (stricmp(pending->lookup->host, request->host))
+	{
+		connect_lookup_t *lookup;
+
+		// Join a lookup already in flight. A new name waits for the current lookup to finish.
+		for (lookup = connect_lookups; lookup; lookup = lookup->next)
+		{
+			if (!stricmp(lookup->host, request->host))
+			{
+				pending->lookup = lookup;
+				break;
+			}
+		}
+	}
+
+	pending->request = *request;
+	if (p)
+	{
+		time(&p->last);
+		p->connect_pending = !(p->proto == pr_q3 && request->proto == pr_q3 &&
+			p->qport == request->qport &&
+			SVC_SameRoute(request, p->prx_host, ntohs(p->to.sin_port), p->userinfo));
+	}
+}
+
 static void SVC_DirectConnect (void)
 {
 	unsigned int i = FindChallengeForAddr(&net_from);
-
-	char userinfo[MAX_INFO_STRING], prx[MAX_INFO_KEY * 4 /* we allow huge size for prx */], *at;
-	peer_t *p = NULL;
+	connect_request_t request = {0};
+	char *userinfo = request.userinfo, *prx = request.host, *at;
 	int qport, port, challenge;
 	protocol_t proto;
 
@@ -215,36 +518,29 @@ static void SVC_DirectConnect (void)
 			return; // wrong challenge
 
 		// and now validate userinfo
-		if ( !CheckUserinfo( userinfo, sizeof( userinfo ), Cmd_Argv( 4 ) ) )
+		if ( !CheckUserinfo( userinfo, sizeof(request.userinfo), Cmd_Argv( 4 ) ) )
 			return; // wrong userinfo
 	}
 	else
 	{
 		// and now validate userinfo
-		if ( !CheckUserinfo( userinfo, sizeof( userinfo ), Cmd_Argv( 1 ) ) )
+		if ( !CheckUserinfo( userinfo, sizeof(request.userinfo), Cmd_Argv( 1 ) ) )
 			return; // wrong userinfo
 
 		// check version/protocol
-		if ( !CheckProtocol( atoi( Info_ValueForKey(userinfo, "protocol", prx, sizeof(prx)) ), proto ) )
+		if ( !CheckProtocol( atoi( Info_ValueForKey(userinfo, "protocol", prx, sizeof(request.host)) ), proto ) )
 			return; // wrong protocol number
 
 		// get qport
-		qport = atoi( Info_ValueForKey(userinfo, "qport", prx, sizeof(prx)) );
+		qport = atoi( Info_ValueForKey(userinfo, "qport", prx, sizeof(request.host)) );
 
 		// see if the challenge is valid
-		if ( !CheckChallenge( atoi( Info_ValueForKey(userinfo, "challenge", prx, sizeof(prx)) ) ) )
+		if ( !CheckChallenge( atoi( Info_ValueForKey(userinfo, "challenge", prx, sizeof(request.host)) ) ) )
 			return; // wrong challenge
 	}
 
-	// check proxy is full
-	if (FWD_peers_count() >= maxclients->integer)
-	{
-		Netchan_OutOfBandPrint (net_from_socket, &net_from, "%c\n" "proxy@%s is full\n\n", A2C_PRINT, hostname->string);
-		return; // no more free slots
-	}
-
 	// check prx setinfo key
-	Info_ValueForKey(userinfo, QWFWD_PRX_KEY, prx, sizeof(prx));
+	Info_ValueForKey(userinfo, QWFWD_PRX_KEY, prx, sizeof(request.host));
 	if (!prx[0])
 	{
 		if ( proto == pr_qw )
@@ -261,7 +557,7 @@ static void SVC_DirectConnect (void)
 	// check chaining
 	if ((at = strchr(prx, '@')) && at[1])
 	{
-		Info_SetValueForKeyEx(userinfo, QWFWD_PRX_KEY, at+1, sizeof(userinfo), false);
+		Info_SetValueForKeyEx(userinfo, QWFWD_PRX_KEY, at+1, sizeof(request.userinfo), false);
 		at[0] = 0; // truncate proxy chains
 	}
 	else
@@ -287,41 +583,15 @@ static void SVC_DirectConnect (void)
 	}
 
 	// put some identifier in userinfo so server/proxy can detect that client use qwfwd.
-	Info_SetValueForStarKey(userinfo, "*qwfwd", QWFWD_VERSION_SHORT, sizeof(userinfo));
+	Info_SetValueForStarKey(userinfo, "*qwfwd", QWFWD_VERSION_SHORT, sizeof(request.userinfo));
 
-	// build a new connection
-
-	// this was new peer, lets register it then
-	if ((p = FWD_peer_new(prx, port, &net_from, userinfo, qport, proto, true)))
-	{
-		Sys_DPrintf("peer %s:%d added or reused\n", inet_ntoa(net_from.sin_addr), (int)ntohs(net_from.sin_port));
-	}
-	else
-	{
-		Sys_DPrintf("peer %s:%d was not added\n", inet_ntoa(net_from.sin_addr), (int)ntohs(net_from.sin_port));
-		return;
-	}
-
-	if ( proto == pr_qw )
-	{
-		Netchan_OutOfBandPrint(net_from_socket, &net_from, "%c", S2C_CONNECTION);
-	}
-	else
-	{
-		if ( p->ps == ps_connected )
-		{
-			if ( p->challenge == challenge )
-			{
-				// ok, we are really really ready to transfer data
-				Netchan_OutOfBandPrint(net_from_socket, &net_from, "connectResponse");
-			}
-			else
-			{
-				// tell client we are ready. just type /reconnect on the console!
-				Netchan_OutOfBandPrint(net_from_socket, &net_from, "print\n" "/reconnect ASAP!\n");
-			}
-		}
-	}
+	request.from = net_from;
+	request.socket = net_from_socket;
+	request.proto = proto;
+	request.port = port;
+	request.qport = qport;
+	request.challenge = challenge;
+	SVC_StartConnect(&request);
 }
 
 /*

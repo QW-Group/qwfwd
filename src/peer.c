@@ -31,21 +31,17 @@ static int parse_color(const char *userinfo, const char *key)
 	return (color < 0) ? 0 : ((color > 16) ? 16 : color);
 }
 
-peer_t	*FWD_peer_new(const char *remote_host, int remote_port, struct sockaddr_in *from, const char *userinfo, int qport, protocol_t proto, qbool link)
+peer_t	*FWD_peer_new(struct sockaddr_in *to, struct sockaddr_in *from, const char *userinfo, int qport, protocol_t proto)
 {
 	peer_t *p;
-	struct sockaddr_in to;
 	int s = INVALID_SOCKET;
 	qbool new_peer = false;
 
-	if (!NET_GetSockAddrIn_ByHostAndPort(&to, remote_host, remote_port))
-		return NULL; // failed to resolve host name?
-
-	if (!SV_IsWhitelisted(&to))
+	if (!SV_IsWhitelisted(to))
 		return NULL;
 
 	// check for bans.
-	if (SV_IsBanned(&to))
+	if (SV_IsBanned(to))
 		return NULL;
 
 	// we probably already have such peer, reuse it then
@@ -65,10 +61,19 @@ peer_t	*FWD_peer_new(const char *remote_host, int remote_port, struct sockaddr_i
 
 		p = Sys_malloc(sizeof(*p)); // alloc peer if needed
 	}
+	else if (p->proto == pr_q3 && proto == pr_q3 && p->ps == ps_challenge && p->qport != qport)
+	{
+		// A Q3 connectResponse has no qport. Give the new handshake its own UDP port.
+		if ((s = NET_UDP_OpenSocket(NULL, 0, true)) == INVALID_SOCKET)
+			return NULL;
+		closesocket(p->s);
+		p->connect = 0;
+	}
 
-	p->s		= ( new_peer ) ? s : p->s; // reuse socket in case of reusing
+	if (s != INVALID_SOCKET)
+		p->s = s;
 	p->from		= *from;
-	p->to		= to;
+	p->to		= *to;
 	p->ps		= ( !new_peer && proto == pr_q3 ) ? p->ps : ps_challenge; // do not reset state for q3 in case of peer reusing
 	p->qport	= qport;
 	p->proto	= proto;
@@ -81,7 +86,7 @@ peer_t	*FWD_peer_new(const char *remote_host, int remote_port, struct sockaddr_i
 	time(&p->last);
 
 	// link only new peer, in case of reusing it already done...
-	if (new_peer && link)
+	if (new_peer)
 	{
 		p->next = peers;
 		peers = p;
@@ -144,7 +149,7 @@ static void FWD_check_timeout(void)
 	for (p = peers; p; p = p->next)
 	{
 		// this is helper for q3 to guess disconnect asap
-		if (p->proto == pr_q3)
+		if (!p->connect_pending && p->proto == pr_q3)
 		{
 			if (cur_time - p->last > 1 && d_cur_time - p->q3_disconnect_check > 0.05 && p->ps == ps_connected)
 			{
@@ -156,12 +161,16 @@ static void FWD_check_timeout(void)
 			}
 		}
 
-		if (cur_time - p->last < 15) // few seconds timeout
-			continue;
-
-		Sys_DPrintf("peer %s:%d timed out\n", inet_ntoa(p->from.sin_addr), (int)ntohs(p->from.sin_port));
-
-		p->ps = ps_drop;
+		if (cur_time - p->last >= 15)
+		{
+			Sys_DPrintf("peer %s:%d timed out\n", inet_ntoa(p->from.sin_addr), (int)ntohs(p->from.sin_port));
+			p->ps = ps_drop;
+		}
+		else if (!p->connect_pending && p->ps == ps_challenge && cur_time - p->connect > 2)
+		{
+			p->connect = cur_time;
+			Netchan_OutOfBandPrint(p->s, &p->to, "getchallenge%s", p->proto == pr_qw ? "\n" : "");
+		}
 	}
 }
 
@@ -354,31 +363,32 @@ retry:
 					break;
 			}
 
-			// peer was not found
 			if (!p)
 				continue;
 
 			// forward data to the server/proxy
 			if (p->ps >= ps_connected)
 			{
-				cnt = 1; // one packet by default
+				cnt = p->connect_pending ? 0 : 1;
 
-				// check for "drop" aka client disconnect,
-				// first 10 bytes for NON connectionless packet is netchan related shit in QW
-				if (p->proto == pr_qw && !connectionless && net_message.cursize > 10 && net_message.data[10] == clc_stringcmd)
+				// A QW client packet starts with two sequence numbers and a little-endian qport.
+				if (p->proto == pr_qw && !connectionless && net_message.cursize > 10 &&
+					net_message.data[10] == clc_stringcmd && !strcmp((char *)net_message.data + 11, "drop"))
 				{
-					if (!strcmp((char*)net_message.data + 10 + 1, "drop"))
-					{
-//						Sys_Printf("peer drop detected\n");
-						p->ps = ps_drop; // drop peer ASAP
-						cnt = 3; // send few packets due to possibile packet lost
-					}
+					unsigned short qport = net_message.data[8] | (net_message.data[9] << 8);
+					if (qport != (unsigned short)p->qport)
+						continue;
+
+					p->ps = ps_drop;
+					SVC_CancelConnectForRoute(p);
+					cnt = 3; // Repeat the drop in case of packet loss.
 				}
 
 				for ( ; cnt > 0; cnt--)
 					NET_SendPacket(p->s, net_message.cursize, net_message.data, &p->to);
 			}
 
+			// Keep the old connection alive while a new destination resolves.
 			time(&p->last);
 		}
 	}
@@ -386,7 +396,7 @@ retry:
 	// now lets check peers sockets, perhaps we have input packets too
 	for (p = peers; p; p = p->next)
 	{
-		if(FD_ISSET(p->s, &rfds))
+		if (p->ps != ps_drop && FD_ISSET(p->s, &rfds))
 		{
 			// yeah, we have packet, read it then
 			for (;;)
@@ -415,7 +425,7 @@ retry:
 					continue;
 				}
 
-				if (p->ps >= ps_connected)
+				if (!p->connect_pending && p->ps >= ps_connected)
 					NET_SendPacket(net_socket, net_message.cursize, net_message.data, &p->from);
 
 // qqshka: commented out
@@ -424,15 +434,6 @@ retry:
 			} // for (;;)
 		} // if(FD_ISSET(p->s, &rfds))
 
-		if (p->ps == ps_challenge)
-		{
-			// send challenge time to time
-			if (time(NULL) - p->connect > 2)
-			{
-				p->connect = time(NULL);
-				Netchan_OutOfBandPrint(p->s, &p->to, "getchallenge%s", p->proto == pr_qw ? "\n" : "");
-			}
-		}
 	} // for (p = peers; p; p = p->next)
 }
 

@@ -126,6 +126,7 @@ extern "C" {
 
 #define	MAX_INFO_STRING		1024
 #define MAX_INFO_KEY 		64
+#define MAX_PRX_HOST (MAX_INFO_KEY * 4)
 
 typedef enum
 {
@@ -149,6 +150,7 @@ typedef struct peer
 	int challenge;					// challenge num
 	char userinfo[MAX_INFO_STRING]; // userinfo
 	char name[MAX_INFO_KEY];		// name, extracted from userinfo
+	char prx_host[MAX_PRX_HOST];		// requested hostname for the current route
 	int top;
 	int bottom;
 	int userid;						// unique per proxy userid
@@ -157,6 +159,7 @@ typedef struct peer
 	struct sockaddr_in to;			// remote addr
 	int s;							// socket, used for connection to remote host
 	peer_state_t ps;				// peer state
+	qbool connect_pending;			// pause the old route while resolving the new one
 	protocol_t	proto;				// which protocol we use
 	struct peer *next;				// next peer in linked list
 } peer_t;
@@ -263,7 +266,7 @@ qbool			FS_SafePath(const char *in);
 extern	peer_t		*peers;
 
 peer_t		*FWD_peer_by_addr(struct sockaddr_in *from);
-peer_t		*FWD_peer_new(const char *remote_host, int remote_port, struct sockaddr_in *from, const char *userinfo, int qport, protocol_t proto, qbool link);
+peer_t		*FWD_peer_new(struct sockaddr_in *to, struct sockaddr_in *from, const char *userinfo, int qport, protocol_t proto);
 void		FWD_update_peers(void);
 
 int			FWD_peers_count(void);
@@ -388,7 +391,7 @@ extern	sizebuf_t		net_message;
 int				NET_GetPacket(int s, sizebuf_t *msg);
 void				NET_SendPacket(int s, int length, const void *data, struct sockaddr_in *to);
 int				NET_UDP_OpenSocket(const char *ip, int port, qbool do_bind);
-qbool				NET_GetSockAddrIn_ByHostAndPort(struct sockaddr_in *address, const char *host, int port);
+qbool				NET_ParseIPv4(const char *host, struct in_addr *address);
 
 char				*NET_BaseAdrToString (struct sockaddr_in *a, char *buf, size_t bufsize);
 char				*NET_AdrToString (struct sockaddr_in *a, char *buf, size_t bufsize);
@@ -404,10 +407,25 @@ void				Netchan_OutOfBandPrint(int s, struct sockaddr_in *adr, const char *forma
 void				NET_Init(void);
 
 //
+// dns.c
+//
+
+#define MAX_PRX_DNS_REQUESTS 64
+
+typedef void (*net_dns_callback_t)(const struct in_addr *address, void *arg);
+
+void				NET_DNS_Init(void);
+void				NET_DNS_Shutdown(void);
+void				NET_DNS_Frame(void);
+// Replies are delivered on the main thread. A NULL address indicates failure.
+qbool				NET_DNS_Resolve(const char *host, net_dns_callback_t callback, void *arg);
+
+//
 // svc.c
 //
 
 qbool				SV_ConnectionlessPacket (void);
+void				SVC_CancelConnectForRoute(peer_t *p);
 
 //
 // clc.c
@@ -434,6 +452,9 @@ void				Info_SetValueForKeyEx (char *s, const char *key, const char *value, unsi
 //
 // query.c
 //
+
+#define MAX_MASTERS 8
+#define MAX_SV_FILTERS 16
 
 void				QRY_Init(void);
 void				QRY_Frame(void);
